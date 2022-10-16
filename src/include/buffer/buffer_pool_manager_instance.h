@@ -121,6 +121,21 @@ class BufferPoolManagerInstance : public BufferPoolManager {
    */
   void ValidatePageId(page_id_t page_id) const;
 
+  /**
+   * Pick a replacement page from either the free list or the replacer.
+   * Always pick from the free list first.
+   * @param[out] frame_id id of frame to be replaced
+   * @return true if replacement found, false otherwise
+   */
+  bool PickReplacement(frame_id_t *frame_id);
+
+  /**
+   * Update metadata of page in pages_[frame_id]
+   * @param frame_id id of frame to update
+   * @param page_id id of page to fill the frame
+   */
+  void UpdatePageMetadata(frame_id_t frame_id, page_id_t page_id);
+
   /** Number of pages in the buffer pool. */
   const size_t pool_size_;
   /** How many instances are in the parallel BPM (if present, otherwise just 1 BPI) */
