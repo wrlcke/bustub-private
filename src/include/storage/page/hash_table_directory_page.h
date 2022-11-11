@@ -172,6 +172,14 @@ class HashTableDirectoryPage {
   uint32_t GetLocalHighBit(uint32_t bucket_idx);
 
   /**
+   * Gets the pair index of an index
+   * A pair of indexes has opposite bits in the highest bit of local depth mask(NOT LOCAL HIGH BIT)
+   * @param bucket_idx the directory index for which to find the split image
+   * @return the directory index of the split image
+   **/
+  uint32_t GetPairIndex(uint32_t bucket_idx);
+
+  /**
    * VerifyIntegrity
    *
    * Verify the following invariants:

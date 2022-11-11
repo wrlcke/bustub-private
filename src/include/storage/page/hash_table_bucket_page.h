@@ -114,8 +114,9 @@ class HashTableBucketPage {
    * bucket_idx is readable.
    *
    * @param bucket_idx the index to update
+   * @Param readable state to update
    */
-  void SetReadable(uint32_t bucket_idx);
+  void SetReadable(uint32_t bucket_idx, bool readable);
 
   /**
    * @return the number of readable elements, i.e. current size
@@ -136,6 +137,14 @@ class HashTableBucketPage {
    * Prints the bucket's occupancy information
    */
   void PrintBucket();
+
+  /**
+   * Set a key-value pair at an index in the bucket.
+   * @param bucket_idx the index to update
+   * @param key key to set
+   * @param value value to set
+   */
+  void SetKeyValue(uint32_t bucket_idx, KeyType key, ValueType value);
 
  private:
   //  For more on BUCKET_ARRAY_SIZE see storage/page/hash_table_page_defs.h

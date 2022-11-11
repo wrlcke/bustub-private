@@ -23,7 +23,7 @@
 namespace bustub {
 
 // NOLINTNEXTLINE
-TEST(HashTablePageTest, DISABLED_DirectoryPageSampleTest) {
+TEST(HashTablePageTest, DirectoryPageSampleTest) {
   DiskManager *disk_manager = new DiskManager("test.db");
   auto *bpm = new BufferPoolManagerInstance(5, disk_manager);
 
@@ -57,7 +57,7 @@ TEST(HashTablePageTest, DISABLED_DirectoryPageSampleTest) {
 }
 
 // NOLINTNEXTLINE
-TEST(HashTablePageTest, DISABLED_BucketPageSampleTest) {
+TEST(HashTablePageTest, BucketPageSampleTest) {
   DiskManager *disk_manager = new DiskManager("test.db");
   auto *bpm = new BufferPoolManagerInstance(5, disk_manager);
 
@@ -114,4 +114,50 @@ TEST(HashTablePageTest, DISABLED_BucketPageSampleTest) {
   delete bpm;
 }
 
+TEST(HashTablePageTest, BucketPageIntegrityTest) {
+  DiskManager *disk_manager = new DiskManager("test.db");
+  auto *bpm = new BufferPoolManagerInstance(5, disk_manager);
+
+  // get a bucket page from the BufferPoolManager
+  page_id_t bucket_page_id = INVALID_PAGE_ID;
+
+  auto bucket_page = reinterpret_cast<HashTableBucketPage<int, int, IntComparator> *>(
+      bpm->NewPage(&bucket_page_id, nullptr)->GetData());
+
+  EXPECT_EQ(true, bucket_page->IsEmpty());
+  EXPECT_EQ(false, bucket_page->IsFull());
+  // insert a few (key, value) pairs
+  for (unsigned i = 0; i < 496; i++) {
+    assert(bucket_page->Insert(i, i, IntComparator()));
+    EXPECT_EQ(false, bucket_page->IsEmpty());
+    EXPECT_EQ(i + 1, bucket_page->NumReadable());
+    if (i != 495) {
+      EXPECT_EQ(false, bucket_page->IsFull());
+    } else {
+      EXPECT_EQ(true, bucket_page->IsFull());
+    }
+  }
+
+  // remove a few pairs
+  for (unsigned i = 0; i < 496; i++) {
+    if (i % 2 == 1) {
+      assert(bucket_page->Remove(i, i, IntComparator()));
+    }
+  }
+  EXPECT_EQ(false, bucket_page->IsFull());
+  EXPECT_EQ(248, bucket_page->NumReadable());
+  for (unsigned i = 0; i < 496; i++) {
+    if (i % 2 == 0) {
+      assert(bucket_page->Remove(i, i, IntComparator()));
+    }
+  }
+  EXPECT_EQ(true, bucket_page->IsEmpty());
+  EXPECT_EQ(0, bucket_page->NumReadable());
+  // unpin the directory page now that we are done
+  bpm->UnpinPage(bucket_page_id, true, nullptr);
+  disk_manager->ShutDown();
+  remove("test.db");
+  delete disk_manager;
+  delete bpm;
+}
 }  // namespace bustub

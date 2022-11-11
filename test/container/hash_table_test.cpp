@@ -24,7 +24,7 @@ namespace bustub {
 // NOLINTNEXTLINE
 
 // NOLINTNEXTLINE
-TEST(HashTableTest, DISABLED_SampleTest) {
+TEST(HashTableTest, SampleTest) {
   auto *disk_manager = new DiskManager("test.db");
   auto *bpm = new BufferPoolManagerInstance(50, disk_manager);
   ExtendibleHashTable<int, int, IntComparator> ht("blah", bpm, IntComparator(), HashFunction<int>());
@@ -110,6 +110,23 @@ TEST(HashTableTest, DISABLED_SampleTest) {
   }
 
   ht.VerifyIntegrity();
+
+  disk_manager->ShutDown();
+  remove("test.db");
+  delete disk_manager;
+  delete bpm;
+}
+
+TEST(HashTableTest, GrowTest) {
+  auto *disk_manager = new DiskManager("test.db");
+  auto *bpm = new BufferPoolManagerInstance(50, disk_manager);
+  ExtendibleHashTable<int, int, IntComparator> ht("blah", bpm, IntComparator(), HashFunction<int>());
+
+  // insert a few values
+  for (int i = 0; i < 496 * 2 + 1; i++) {
+    ht.Insert(nullptr, i, i);
+    // ht.PrintDir();
+  }
 
   disk_manager->ShutDown();
   remove("test.db");
