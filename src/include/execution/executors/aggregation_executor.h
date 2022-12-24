@@ -143,6 +143,8 @@ class SimpleAggregationHashTable {
   /** @return Iterator to the end of the hash table */
   Iterator End() { return Iterator{ht_.cend()}; }
 
+  inline void Clear() { ht_.clear(); }
+
  private:
   /** The hash table is just a map from aggregate keys to aggregate values */
   std::unordered_map<AggregateKey, AggregateValue> ht_{};
@@ -203,14 +205,24 @@ class AggregationExecutor : public AbstractExecutor {
     return {vals};
   }
 
+  Tuple MakeOutputTuple(const AggregateKey &key, const AggregateValue &val) {
+    std::vector<Value> vals;
+    vals.reserve(GetOutputSchema()->GetColumnCount());
+    for (const auto &col : GetOutputSchema()->GetColumns()) {
+      BUSTUB_ASSERT(col.GetExpr() != nullptr, "Column expression cannot be null.");
+      vals.emplace_back(col.GetExpr()->EvaluateAggregate(key.group_bys_, val.aggregates_));
+    }
+    return Tuple(vals, GetOutputSchema());
+  }
+
  private:
   /** The aggregation plan node */
   const AggregationPlanNode *plan_;
   /** The child executor that produces tuples over which the aggregation is computed */
   std::unique_ptr<AbstractExecutor> child_;
   /** Simple aggregation hash table */
-  // TODO(Student): Uncomment SimpleAggregationHashTable aht_;
+  SimpleAggregationHashTable aht_;
   /** Simple aggregation hash table iterator */
-  // TODO(Student): Uncomment SimpleAggregationHashTable::Iterator aht_iterator_;
+  SimpleAggregationHashTable::Iterator aht_iterator_;
 };
 }  // namespace bustub

@@ -17,11 +17,32 @@ namespace bustub {
 
 UpdateExecutor::UpdateExecutor(ExecutorContext *exec_ctx, const UpdatePlanNode *plan,
                                std::unique_ptr<AbstractExecutor> &&child_executor)
-    : AbstractExecutor(exec_ctx) {}
+    : AbstractExecutor(exec_ctx), plan_(plan), child_executor_(std::move(child_executor)) {
+  table_info_ = exec_ctx_->GetCatalog()->GetTable(plan->TableOid());
+}
 
-void UpdateExecutor::Init() {}
+void UpdateExecutor::Init() { child_executor_->Init(); }
 
-bool UpdateExecutor::Next([[maybe_unused]] Tuple *tuple, RID *rid) { return false; }
+bool UpdateExecutor::Next([[maybe_unused]] Tuple *tuple, RID *rid) {
+  while (child_executor_->Next(tuple, rid)) {
+    Tuple &&updated_tuple = GenerateUpdatedTuple(*tuple);
+    if (!table_info_->table_->UpdateTuple(updated_tuple, *rid, exec_ctx_->GetTransaction())) {
+      continue;
+    }
+    for (const IndexInfo *index_info : exec_ctx_->GetCatalog()->GetTableIndexes(table_info_->name_)) {
+      const Schema &key_schema = *index_info->index_->GetKeySchema();
+      const std::vector<uint32_t> &key_attrs = index_info->index_->GetKeyAttrs();
+      const Tuple &old_key = tuple->KeyFromTuple(table_info_->schema_, key_schema, key_attrs);
+      const Tuple &new_key = updated_tuple.KeyFromTuple(table_info_->schema_, key_schema, key_attrs);
+      if (old_key.GetLength() != new_key.GetLength() ||
+          std::strncmp(old_key.GetData(), new_key.GetData(), old_key.GetLength()) != 0) {
+        index_info->index_->DeleteEntry(old_key, *rid, exec_ctx_->GetTransaction());
+        index_info->index_->InsertEntry(new_key, *rid, exec_ctx_->GetTransaction());
+      }
+    }
+  }
+  return false;
+}
 
 Tuple UpdateExecutor::GenerateUpdatedTuple(const Tuple &src_tuple) {
   const auto &update_attrs = plan_->GetUpdateAttr();

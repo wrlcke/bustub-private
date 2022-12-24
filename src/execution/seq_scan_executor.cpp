@@ -14,10 +14,24 @@
 
 namespace bustub {
 
-SeqScanExecutor::SeqScanExecutor(ExecutorContext *exec_ctx, const SeqScanPlanNode *plan) : AbstractExecutor(exec_ctx) {}
+SeqScanExecutor::SeqScanExecutor(ExecutorContext *exec_ctx, const SeqScanPlanNode *plan)
+    : AbstractExecutor(exec_ctx), plan_(plan) {
+  table_info_ = exec_ctx_->GetCatalog()->GetTable(plan_->GetTableOid());
+}
 
-void SeqScanExecutor::Init() {}
+void SeqScanExecutor::Init() { table_iterator_ = table_info_->table_->Begin(exec_ctx_->GetTransaction()); }
 
-bool SeqScanExecutor::Next(Tuple *tuple, RID *rid) { return false; }
+bool SeqScanExecutor::Next(Tuple *tuple, RID *rid) {
+  for (; table_iterator_ != table_info_->table_->End(); ++table_iterator_) {
+    if (plan_->GetPredicate() == nullptr ||
+        plan_->GetPredicate()->Evaluate(&*table_iterator_, &table_info_->schema_).GetAs<bool>()) {
+      *tuple = MakeOutputTuple(*table_iterator_);
+      *rid = table_iterator_->GetRid();
+      ++table_iterator_;
+      return true;
+    }
+  }
+  return false;
+}
 
 }  // namespace bustub

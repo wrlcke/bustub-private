@@ -14,6 +14,7 @@
 
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include "execution/executor_context.h"
 #include "execution/executors/abstract_executor.h"
@@ -55,6 +56,25 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
  private:
   /** The NestedLoopJoin plan node to be executed. */
   const NestedLoopJoinPlanNode *plan_;
+  /** The child executor that produces tuple for the left side of join. */
+  std::unique_ptr<AbstractExecutor> left_executor_;
+  /** The child executor that produces tuple for the right side of join. */
+  std::unique_ptr<AbstractExecutor> right_executor_;
+  const Schema *output_schema_;
+  const Schema *left_schema_;
+  const Schema *right_schema_;
+  Tuple outer_tuple_;
+  bool outer_tuple_valid_;
+
+  inline Tuple MakeJoinTuple(const Tuple &outer_tuple, const Tuple &inner_tuple) {
+    std::vector<Value> values;
+    values.reserve(output_schema_->GetColumnCount());
+    for (const auto &col : output_schema_->GetColumns()) {
+      BUSTUB_ASSERT(col.GetExpr() != nullptr, "Column expression cannot be null.");
+      values.emplace_back(col.GetExpr()->EvaluateJoin(&outer_tuple_, left_schema_, &inner_tuple, right_schema_));
+    }
+    return Tuple(values, output_schema_);
+  }
 };
 
 }  // namespace bustub

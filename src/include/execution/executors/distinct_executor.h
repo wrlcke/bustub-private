@@ -13,12 +13,24 @@
 #pragma once
 
 #include <memory>
+#include <unordered_set>
 #include <utility>
 
+#include "common/util/hash_util.h"
 #include "execution/executors/abstract_executor.h"
 #include "execution/plans/distinct_plan.h"
 
 namespace bustub {
+
+struct TupleHashFn {
+  size_t operator()(const Tuple &tuple) const { return HashUtil::HashBytes(tuple.GetData(), tuple.GetLength()); }
+};
+struct TupleEqualFn {
+  bool operator()(const Tuple &lhs, const Tuple &rhs) const {
+    return lhs.GetLength() == rhs.GetLength() && std::strncmp(lhs.GetData(), rhs.GetData(), lhs.GetLength()) == 0;
+  }
+};
+using SimpleDistinctHashTable = std::unordered_set<Tuple, TupleHashFn, TupleEqualFn>;
 
 /**
  * DistinctExecutor removes duplicate rows from child ouput.
@@ -53,5 +65,7 @@ class DistinctExecutor : public AbstractExecutor {
   const DistinctPlanNode *plan_;
   /** The child executor from which tuples are obtained */
   std::unique_ptr<AbstractExecutor> child_executor_;
+  /** The hash table used to store distinct tuples */
+  SimpleDistinctHashTable dht_;
 };
 }  // namespace bustub

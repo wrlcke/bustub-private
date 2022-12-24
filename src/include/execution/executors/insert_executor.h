@@ -14,6 +14,7 @@
 
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include "execution/executor_context.h"
 #include "execution/executors/abstract_executor.h"
@@ -59,6 +60,19 @@ class InsertExecutor : public AbstractExecutor {
  private:
   /** The insert plan node to be executed*/
   const InsertPlanNode *plan_;
+  std::unique_ptr<AbstractExecutor> child_executor_;
+  const TableInfo *table_info_;
+
+  inline void InsertEntry(Tuple *tuple, RID *rid) {
+    if (!table_info_->table_->InsertTuple(*tuple, rid, exec_ctx_->GetTransaction())) {
+      return;
+    }
+    for (const IndexInfo *index_info : exec_ctx_->GetCatalog()->GetTableIndexes(table_info_->name_)) {
+      const Tuple &key = tuple->KeyFromTuple(table_info_->schema_, *index_info->index_->GetKeySchema(),
+                                             index_info->index_->GetKeyAttrs());
+      index_info->index_->InsertEntry(key, *rid, exec_ctx_->GetTransaction());
+    }
+  }
 };
 
 }  // namespace bustub

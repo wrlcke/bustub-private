@@ -21,7 +21,6 @@ namespace bustub {
 
 template <typename KeyType, typename ValueType, typename KeyComparator>
 bool HASH_TABLE_BUCKET_TYPE::GetValue(KeyType key, KeyComparator cmp, std::vector<ValueType> *result) {
-  result->clear();
   for (uint32_t idx = 0; idx < BUCKET_ARRAY_SIZE; idx++) {
     if (!IsOccupied(idx)) {
       break;
