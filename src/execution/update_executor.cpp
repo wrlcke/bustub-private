@@ -19,15 +19,19 @@ UpdateExecutor::UpdateExecutor(ExecutorContext *exec_ctx, const UpdatePlanNode *
                                std::unique_ptr<AbstractExecutor> &&child_executor)
     : AbstractExecutor(exec_ctx), plan_(plan), child_executor_(std::move(child_executor)) {
   table_info_ = exec_ctx_->GetCatalog()->GetTable(plan->TableOid());
+  transaction_ = exec_ctx_->GetTransaction();
+  lock_manager_ = exec_ctx->GetLockManager();
 }
 
 void UpdateExecutor::Init() { child_executor_->Init(); }
 
 bool UpdateExecutor::Next([[maybe_unused]] Tuple *tuple, RID *rid) {
   while (child_executor_->Next(tuple, rid)) {
+    lock_manager_->LockExclusiveIfNeeded(transaction_, *rid);
     Tuple &&updated_tuple = GenerateUpdatedTuple(*tuple);
     if (!table_info_->table_->UpdateTuple(updated_tuple, *rid, exec_ctx_->GetTransaction())) {
-      continue;
+      transaction_->SetState(TransactionState::ABORTED);
+      return false;
     }
     for (const IndexInfo *index_info : exec_ctx_->GetCatalog()->GetTableIndexes(table_info_->name_)) {
       const Schema &key_schema = *index_info->index_->GetKeySchema();
@@ -38,6 +42,10 @@ bool UpdateExecutor::Next([[maybe_unused]] Tuple *tuple, RID *rid) {
           std::strncmp(old_key.GetData(), new_key.GetData(), old_key.GetLength()) != 0) {
         index_info->index_->DeleteEntry(old_key, *rid, exec_ctx_->GetTransaction());
         index_info->index_->InsertEntry(new_key, *rid, exec_ctx_->GetTransaction());
+        IndexWriteRecord record(*rid, table_info_->oid_, WType::UPDATE, updated_tuple, index_info->index_oid_,
+                                exec_ctx_->GetCatalog());
+        record.old_tuple_ = *tuple;
+        transaction_->GetIndexWriteSet()->emplace_back(record);
       }
     }
   }

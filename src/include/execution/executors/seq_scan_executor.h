@@ -54,14 +54,9 @@ class SeqScanExecutor : public AbstractExecutor {
   std::vector<uint32_t> output_attrs_;
   TableIterator table_iterator_{nullptr, RID(), nullptr};
 
-  Tuple MakeOutputTuple(const Tuple &tuple) {
-    std::vector<Value> values;
-    values.reserve(GetOutputSchema()->GetColumnCount());
-    for (const Column &column : GetOutputSchema()->GetColumns()) {
-      BUSTUB_ASSERT(column.GetExpr() != nullptr, "Column expression cannot be null.");
-      values.emplace_back(column.GetExpr()->Evaluate(&tuple, &table_info_->schema_));
-    }
-    return Tuple(values, GetOutputSchema());
-  }
+  Transaction *transaction_;
+  LockManager *lock_manager_;
+
+  Tuple MakeOutputTuple(const Tuple &tuple);
 };
 }  // namespace bustub

@@ -20,6 +20,10 @@ InsertExecutor::InsertExecutor(ExecutorContext *exec_ctx, const InsertPlanNode *
                                std::unique_ptr<AbstractExecutor> &&child_executor)
     : AbstractExecutor(exec_ctx), plan_(plan), child_executor_(std::move(child_executor)) {
   table_info_ = exec_ctx_->GetCatalog()->GetTable(plan_->TableOid());
+  transaction_ = exec_ctx_->GetTransaction();
+  lock_manager_ = exec_ctx->GetLockManager();
+  assert(transaction_ != nullptr);
+  assert(lock_manager_ != nullptr);
 }
 
 void InsertExecutor::Init() {
@@ -33,15 +37,36 @@ bool InsertExecutor::Next([[maybe_unused]] Tuple *tuple, RID *rid) {
     // Insert the tuple directly into the table
     for (const auto &raw_value : plan_->RawValues()) {
       *tuple = Tuple(raw_value, &table_info_->schema_);
-      InsertEntry(tuple, rid);
+      if (!InsertEntry(tuple, rid)) {
+        return false;
+      }
     }
   } else {
     // Insert the tuple from the child executor
     while (child_executor_->Next(tuple, rid)) {
-      InsertEntry(tuple, rid);
+      if (!InsertEntry(tuple, rid)) {
+        return false;
+      }
     }
   }
   return false;
+}
+
+bool InsertExecutor::InsertEntry(Tuple *tuple, RID *rid) {
+  if (!table_info_->table_->InsertTuple(*tuple, rid, transaction_)) {
+    transaction_->SetState(TransactionState::ABORTED);
+    return false;
+  }
+  lock_manager_->LockExclusiveIfNeeded(transaction_, *rid);
+
+  for (const IndexInfo *index_info : exec_ctx_->GetCatalog()->GetTableIndexes(table_info_->name_)) {
+    const Tuple &key = tuple->KeyFromTuple(table_info_->schema_, *index_info->index_->GetKeySchema(),
+                                           index_info->index_->GetKeyAttrs());
+    index_info->index_->InsertEntry(key, *rid, exec_ctx_->GetTransaction());
+    transaction_->GetIndexWriteSet()->emplace_back(*rid, table_info_->oid_, WType::INSERT, *tuple,
+                                                   index_info->index_oid_, exec_ctx_->GetCatalog());
+  }
+  return true;
 }
 
 }  // namespace bustub

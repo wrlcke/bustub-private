@@ -46,11 +46,38 @@ class LockManager {
 
   class LockRequestQueue {
    public:
+    using Iterator = std::list<LockRequest>::iterator;
     std::list<LockRequest> request_queue_;
     // for notifying blocked transactions on this rid
     std::condition_variable cv_;
     // txn_id of an upgrading transaction (if any)
     txn_id_t upgrading_ = INVALID_TXN_ID;
+
+    Iterator Find(txn_id_t txn_id) {
+      return std::find_if(request_queue_.begin(), request_queue_.end(),
+                          [txn_id](const LockRequest &request) { return request.txn_id_ == txn_id; });
+    }
+
+    Iterator Push(txn_id_t txn_id, LockMode lock_mode) {
+      return request_queue_.emplace(request_queue_.end(), txn_id, lock_mode);
+    }
+
+    Iterator Erase(Iterator it) { return request_queue_.erase(it); }
+
+    Iterator FirstWaiting() {
+      return std::find_if(request_queue_.begin(), request_queue_.end(),
+                          [](const LockRequest &request) { return !request.granted_; });
+    }
+
+    Iterator Move(Iterator src, Iterator dest) {
+      auto request = *src;
+      request_queue_.erase(src);
+      return request_queue_.emplace(dest, request);
+    }
+
+    Iterator Begin() { return request_queue_.begin(); }
+
+    Iterator End() { return request_queue_.end(); }
   };
 
  public:
@@ -104,11 +131,41 @@ class LockManager {
    */
   bool Unlock(Transaction *txn, const RID &rid);
 
+  bool LockSharedIfNeeded(Transaction *txn, const RID &rid) {
+    if (txn->GetIsolationLevel() != IsolationLevel::READ_UNCOMMITTED) {
+      return LockShared(txn, rid);
+    }
+    return true;
+  }
+
+  bool LockExclusiveIfNeeded(Transaction *txn, const RID &rid) {
+    if (txn->IsSharedLocked(rid)) {
+      return LockUpgrade(txn, rid);
+    }
+    return LockExclusive(txn, rid);
+  }
+
+  bool UnlockSharedIfNeeded(Transaction *txn, const RID &rid) {
+    if (txn->GetIsolationLevel() == IsolationLevel::READ_COMMITTED) {
+      if (txn->IsSharedLocked(rid)) {
+        return Unlock(txn, rid);
+      }
+    }
+    return true;
+  }
+
  private:
+  /** The latch to protect the lock table. */
   std::mutex latch_;
 
   /** Lock table for lock requests. */
   std::unordered_map<RID, LockRequestQueue> lock_table_;
+
+  bool NeedWait(const LockRequest &request, const LockRequestQueue &lock_request_queue);
+
+  void AbortYoung(const LockRequest &request, LockRequestQueue *lock_request_queue);
+
+  bool HasConflict(const LockRequest &request, const LockRequest &other);
 };
 
 }  // namespace bustub
