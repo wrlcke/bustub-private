@@ -68,6 +68,8 @@ class TrieNode {
 
   // You can add additional fields and methods here. But in general, you don't need to add extra fields to
   // complete this project.
+
+  virtual auto Empty() const -> bool { return children_.empty(); }
 };
 
 // A TrieNodeWithValue is a TrieNode that also has a value of type T associated with it.
@@ -89,6 +91,8 @@ class TrieNodeWithValue : public TrieNode {
   auto Clone() const -> std::unique_ptr<TrieNode> override {
     return std::make_unique<TrieNodeWithValue<T>>(children_, value_);
   }
+
+  auto Empty() const -> bool override { return false; }
 
   // The value associated with this trie node.
   std::shared_ptr<T> value_;
