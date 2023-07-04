@@ -23,18 +23,20 @@ auto LRUKReplacer::Evict(frame_id_t *frame_id) -> bool {
     return false;
   }
   for (auto it = history_list_.begin(); it != history_list_.end(); ++it) {
-    if (node_store_[*it].is_evictable_) {
-      *frame_id = *it;
-      node_store_.erase(*frame_id);
+    const LRUKNode &node = **it;
+    if (node.is_evictable_) {
+      *frame_id = node.fid_;
+      node_store_.erase(node.fid_);
       history_list_.erase(it);
       --curr_size_;
       return true;
     }
   }
   for (auto it = cache_list_.begin(); it != cache_list_.end(); ++it) {
-    if (node_store_[*it].is_evictable_) {
-      *frame_id = *it;
-      node_store_.erase(*frame_id);
+    const LRUKNode &node = **it;
+    if (node.is_evictable_) {
+      *frame_id = node.fid_;
+      node_store_.erase(node.fid_);
       cache_list_.erase(it);
       --curr_size_;
       return true;
@@ -45,24 +47,29 @@ auto LRUKReplacer::Evict(frame_id_t *frame_id) -> bool {
 
 void LRUKReplacer::RecordAccess(frame_id_t frame_id, [[maybe_unused]] AccessType access_type) {
   std::lock_guard<std::mutex> latch(latch_);
+  ++current_timestamp_;
   auto node_it = node_store_.find(frame_id);
   if (node_it == node_store_.end()) {
-    history_list_.emplace_back(frame_id);
-    node_store_.emplace(frame_id, LRUKNode{--history_list_.end(), 1, false});
+    auto [store_it, _] = node_store_.emplace(frame_id, LRUKNode{{current_timestamp_}, {}, {}, frame_id, false});
+    LRUKNode &node = store_it->second;
+    auto history_it = history_list_.insert(history_list_.end(), &node);
+    node.history_it_ = history_it;
     return;
   }
   LRUKNode &node = node_it->second;
-  if (node.access_count_ >= k_) {
-    cache_list_.erase(node.list_it_);
-    cache_list_.emplace_back(frame_id);
-    node.list_it_ = --cache_list_.end();
+  if (node.accessed_time_.size() >= k_) {
+    cache_list_.erase(node.cache_it_);
+    node.accessed_time_.pop_front();
+    node.accessed_time_.emplace_back(current_timestamp_);
+    auto [cache_it, _] = cache_list_.emplace(&node);
+    node.cache_it_ = cache_it;
     return;
   }
-  ++node.access_count_;
-  if (node.access_count_ >= k_) {
-    history_list_.erase(node.list_it_);
-    cache_list_.emplace_back(frame_id);
-    node.list_it_ = --cache_list_.end();
+  node.accessed_time_.emplace_back(current_timestamp_);
+  if (node.accessed_time_.size() >= k_) {
+    history_list_.erase(node.history_it_);
+    auto [cache_it, _] = cache_list_.emplace(&node);
+    node.cache_it_ = cache_it;
   }
 }
 
@@ -86,10 +93,10 @@ void LRUKReplacer::Remove(frame_id_t frame_id) {
     throw bustub::Exception("Remove non-evictable node frame!");
   }
   --curr_size_;
-  if (node.access_count_ >= k_) {
-    cache_list_.erase(node.list_it_);
+  if (node.accessed_time_.size() >= k_) {
+    cache_list_.erase(node.cache_it_);
   } else {
-    history_list_.erase(node.list_it_);
+    history_list_.erase(node.history_it_);
   }
   node_store_.erase(node_it);
 }
