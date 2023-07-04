@@ -47,7 +47,7 @@ auto BufferPoolManager::NewPage(page_id_t *page_id) -> Page * {
     *page_id = AllocatePage();
     UpdatePageMetadata(frame_id, *page_id);
     page->ResetMemory();
-    // disk_manager_->WritePage(page_->page_id_, page->.data_);
+    disk_manager_->WritePage(page->page_id_, page->data_);
     PinPage(frame_id, *page_id);
     return page;
   }
@@ -115,7 +115,7 @@ void BufferPoolManager::FlushAllPages() {
 auto BufferPoolManager::DeletePage(page_id_t page_id) -> bool {
   std::lock_guard<std::mutex> latch(latch_);
   if (page_table_.count(page_id) == 0) {
-    return false;
+    return true;
   }
   frame_id_t frame_id = page_table_[page_id];
   Page *page = pages_ + frame_id;
