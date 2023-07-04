@@ -22,9 +22,9 @@ BufferPoolManager::BufferPoolManager(size_t pool_size, DiskManager *disk_manager
                                      LogManager *log_manager)
     : pool_size_(pool_size), disk_manager_(disk_manager), log_manager_(log_manager) {
   // TODO(students): remove this line after you have implemented the buffer pool manager
-  throw NotImplementedException(
-      "BufferPoolManager is not implemented yet. If you have finished implementing BPM, please remove the throw "
-      "exception line in `buffer_pool_manager.cpp`.");
+  // throw NotImplementedException(
+  //     "BufferPoolManager is not implemented yet. If you have finished implementing BPM, please remove the throw "
+  //     "exception line in `buffer_pool_manager.cpp`.");
 
   // we allocate a consecutive memory space for the buffer pool
   pages_ = new Page[pool_size_];
@@ -38,30 +38,152 @@ BufferPoolManager::BufferPoolManager(size_t pool_size, DiskManager *disk_manager
 
 BufferPoolManager::~BufferPoolManager() { delete[] pages_; }
 
-auto BufferPoolManager::NewPage(page_id_t *page_id) -> Page * { return nullptr; }
+auto BufferPoolManager::NewPage(page_id_t *page_id) -> Page * {
+  std::lock_guard<std::mutex> latch(latch_);
+  frame_id_t frame_id;
+  Page *page;
+  if (PickReplacement(&frame_id)) {
+    page = pages_ + frame_id;
+    *page_id = AllocatePage();
+    UpdatePageMetadata(frame_id, *page_id);
+    page->ResetMemory();
+    // disk_manager_->WritePage(page_->page_id_, page->.data_);
+    PinPage(frame_id, *page_id);
+    return page;
+  }
+  return nullptr;
+}
 
 auto BufferPoolManager::FetchPage(page_id_t page_id, [[maybe_unused]] AccessType access_type) -> Page * {
+  std::lock_guard<std::mutex> latch(latch_);
+  frame_id_t frame_id;
+  Page *page;
+  if (page_table_.count(page_id) != 0) {
+    frame_id = page_table_[page_id];
+    page = pages_ + frame_id;
+    PinPage(frame_id, page_id);
+    return page;
+  }
+  if (PickReplacement(&frame_id)) {
+    page = pages_ + frame_id;
+    UpdatePageMetadata(frame_id, page_id);
+    disk_manager_->ReadPage(page_id, page->data_);
+    PinPage(frame_id, page_id);
+    return page;
+  }
   return nullptr;
 }
 
 auto BufferPoolManager::UnpinPage(page_id_t page_id, bool is_dirty, [[maybe_unused]] AccessType access_type) -> bool {
-  return false;
+  std::lock_guard<std::mutex> latch(latch_);
+  if (page_table_.count(page_id) == 0) {
+    return false;
+  }
+  frame_id_t frame_id = page_table_[page_id];
+  Page *page = pages_ + frame_id;
+  if (page->pin_count_ <= 0) {
+    return false;
+  }
+  --page->pin_count_;
+  page->is_dirty_ |= is_dirty;
+  if (page->pin_count_ == 0) {
+    replacer_->SetEvictable(frame_id, true);
+  }
+  return true;
 }
 
-auto BufferPoolManager::FlushPage(page_id_t page_id) -> bool { return false; }
+auto BufferPoolManager::FlushPage(page_id_t page_id) -> bool {
+  std::lock_guard<std::mutex> latch(latch_);
+  if (page_table_.count(page_id) == 0) {
+    return false;
+  }
+  frame_id_t frame_id = page_table_[page_id];
+  Page *page = pages_ + frame_id;
+  disk_manager_->WritePage(page_id, page->data_);
+  page->is_dirty_ = false;
+  return true;
+}
 
-void BufferPoolManager::FlushAllPages() {}
+void BufferPoolManager::FlushAllPages() {
+  std::lock_guard<std::mutex> latch(latch_);
+  for (auto [page_id, frame_id] : page_table_) {
+    disk_manager_->WritePage(page_id, pages_[frame_id].data_);
+    pages_[frame_id].is_dirty_ = false;
+  }
+}
 
-auto BufferPoolManager::DeletePage(page_id_t page_id) -> bool { return false; }
+auto BufferPoolManager::DeletePage(page_id_t page_id) -> bool {
+  std::lock_guard<std::mutex> latch(latch_);
+  if (page_table_.count(page_id) == 0) {
+    return false;
+  }
+  frame_id_t frame_id = page_table_[page_id];
+  Page *page = pages_ + frame_id;
+  if (page->pin_count_ > 0) {
+    return false;
+  }
+  free_list_.emplace_back(frame_id);
+  UpdatePageMetadata(frame_id, INVALID_PAGE_ID);
+  page->ResetMemory();
+  replacer_->Remove(frame_id);
+  // disk_manager_->WritePage(page->page_id_, page->data_);
+  DeallocatePage(page_id);
+  return true;
+}
 
 auto BufferPoolManager::AllocatePage() -> page_id_t { return next_page_id_++; }
 
-auto BufferPoolManager::FetchPageBasic(page_id_t page_id) -> BasicPageGuard { return {this, nullptr}; }
+auto BufferPoolManager::FetchPageBasic(page_id_t page_id) -> BasicPageGuard { return {this, FetchPage(page_id)}; }
 
-auto BufferPoolManager::FetchPageRead(page_id_t page_id) -> ReadPageGuard { return {this, nullptr}; }
+auto BufferPoolManager::FetchPageRead(page_id_t page_id) -> ReadPageGuard {
+  Page *page = FetchPage(page_id);
+  page->RLatch();
+  return {this, page};
+}
 
-auto BufferPoolManager::FetchPageWrite(page_id_t page_id) -> WritePageGuard { return {this, nullptr}; }
+auto BufferPoolManager::FetchPageWrite(page_id_t page_id) -> WritePageGuard {
+  Page *page = FetchPage(page_id);
+  page->WLatch();
+  return {this, page};
+}
 
-auto BufferPoolManager::NewPageGuarded(page_id_t *page_id) -> BasicPageGuard { return {this, nullptr}; }
+auto BufferPoolManager::NewPageGuarded(page_id_t *page_id) -> BasicPageGuard { return {this, NewPage(page_id)}; }
+
+auto BufferPoolManager::PickReplacement(frame_id_t *frame_id) -> bool {
+  if (!free_list_.empty()) {
+    *frame_id = free_list_.front();
+    free_list_.pop_front();
+    return true;
+  }
+  bool succeeded = replacer_->Evict(frame_id);
+  if (!succeeded) {
+    return false;
+  }
+  Page *page = pages_ + *frame_id;
+  if (page->is_dirty_) {
+    disk_manager_->WritePage(page->page_id_, page->data_);
+  }
+  return true;
+}
+
+auto BufferPoolManager::UpdatePageMetadata(frame_id_t frame_id, page_id_t page_id) -> void {
+  Page *page = pages_ + frame_id;
+  page_table_.erase(page->page_id_);
+  if (page_id != INVALID_PAGE_ID) {
+    page_table_[page_id] = frame_id;
+  }
+  page->page_id_ = page_id;
+  page->is_dirty_ = false;
+  page->pin_count_ = 0;
+}
+
+auto BufferPoolManager::PinPage(frame_id_t frame_id, page_id_t page_id) -> void {
+  Page *page = pages_ + frame_id;
+  replacer_->RecordAccess(frame_id);
+  if (page->pin_count_ == 0) {
+    replacer_->SetEvictable(frame_id, false);
+  }
+  ++page->pin_count_;
+}
 
 }  // namespace bustub
