@@ -192,6 +192,7 @@ class BufferPoolManager {
   std::list<frame_id_t> free_list_;
   /** This latch protects shared data structures. We recommend updating this comment to describe what it protects. */
   std::mutex latch_;
+  std::mutex *frame_latches_;
 
   /**
    * @brief Allocate a page on disk. Caller should acquire the latch before calling this function.
@@ -208,10 +209,5 @@ class BufferPoolManager {
   }
 
   // TODO(student): You may add additional private members and helper functions
-  auto PickReplacement(frame_id_t *frame_id) -> bool;
-
-  auto UpdatePageMetadata(frame_id_t frame_id, page_id_t page_id) -> void;
-
-  auto PinPage(frame_id_t frame_id, page_id_t page_id) -> void;
 };
 }  // namespace bustub
