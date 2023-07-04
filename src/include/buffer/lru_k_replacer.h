@@ -15,6 +15,7 @@
 #include <limits>
 #include <list>
 #include <mutex>  // NOLINT
+#include <set>
 #include <unordered_map>
 #include <vector>
 
@@ -34,8 +35,21 @@ class LRUKNode {
   // [[maybe_unused]] size_t k_;
   // [[maybe_unused]] frame_id_t fid_;
   // [[maybe_unused]] bool is_evictable_{false};
-  std::list<frame_id_t>::iterator list_it_;
-  size_t access_count_;
+
+  std::list<size_t> accessed_time_;
+  struct HotNodeComparator {
+    auto operator()(const LRUKNode *lhs, const LRUKNode *rhs) const -> bool {
+      return lhs->accessed_time_.front() < rhs->accessed_time_.front();
+    }
+  };
+  using ColdList = std::list<const LRUKNode *>;
+  using HotList = std::set<const LRUKNode *, HotNodeComparator>;
+  using ColdIterator = ColdList::iterator;
+  using HotIterator = HotList::iterator;
+
+  ColdIterator cold_it_;
+  HotIterator hot_it_;
+  frame_id_t fid_;
   bool is_evictable_;
 };
 
@@ -159,9 +173,15 @@ class LRUKReplacer {
   // [[maybe_unused]] size_t replacer_size_;
   // [[maybe_unused]] size_t k_;
   // [[maybe_unused]] std::mutex latch_;
+  using ColdList = LRUKNode::ColdList;
+  using HotList = LRUKNode::HotList;
+  using ColdIterator = LRUKNode::ColdIterator;
+  using HotIterator = LRUKNode::HotIterator;
+
   std::unordered_map<frame_id_t, LRUKNode> node_store_;
-  std::list<frame_id_t> history_list_;
-  std::list<frame_id_t> cache_list_;
+  size_t current_timestamp_{0};
+  ColdList cold_list_;
+  HotList hot_list_;
   size_t curr_size_{0};
   [[maybe_unused]] size_t replacer_size_;
   size_t k_;
