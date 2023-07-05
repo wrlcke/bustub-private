@@ -82,7 +82,7 @@ auto BufferPoolManager::FetchPage(page_id_t page_id, [[maybe_unused]] AccessType
   if (page_table_.count(page_id) != 0) {
     frame_id = page_table_[page_id];
     page = pages_ + frame_id;
-    replacer_->RecordAccess(frame_id);
+    replacer_->RecordAccess(frame_id, access_type);
     std::unique_lock<std::mutex> frame_latch(frame_latches_[frame_id]);
     if (page->pin_count_ == 0) {
       replacer_->SetEvictable(frame_id, false);
@@ -97,7 +97,7 @@ auto BufferPoolManager::FetchPage(page_id_t page_id, [[maybe_unused]] AccessType
   } else if (!replacer_->Evict(&frame_id)) {
     return nullptr;
   }
-  replacer_->RecordAccess(frame_id);
+  replacer_->RecordAccess(frame_id, access_type);
   replacer_->SetEvictable(frame_id, false);
   page = pages_ + frame_id;
 
