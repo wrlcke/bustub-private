@@ -23,27 +23,30 @@ auto LRUKReplacer::Evict(frame_id_t *frame_id) -> bool {
     return false;
   }
   for (auto it = cold_list_.begin(); it != cold_list_.end(); ++it) {
-    if (node_store_[*it].is_evictable_) {
-      *frame_id = *it;
-      node_store_.erase(*frame_id);
+    const LRUKNode &node = **it;
+    if (node.is_evictable_) {
+      *frame_id = node.fid_;
+      node_store_.erase(node.fid_);
       cold_list_.erase(it);
       --curr_size_;
       return true;
     }
   }
   for (auto it = warm_list_.begin(); it != warm_list_.end(); ++it) {
-    if (node_store_[*it].is_evictable_) {
-      *frame_id = *it;
-      node_store_.erase(*frame_id);
+    const LRUKNode &node = **it;
+    if (node.is_evictable_) {
+      *frame_id = node.fid_;
+      node_store_.erase(node.fid_);
       warm_list_.erase(it);
       --curr_size_;
       return true;
     }
   }
   for (auto it = hot_list_.begin(); it != hot_list_.end(); ++it) {
-    if (node_store_[*it].is_evictable_) {
-      *frame_id = *it;
-      node_store_.erase(*frame_id);
+    const LRUKNode &node = **it;
+    if (node.is_evictable_) {
+      *frame_id = node.fid_;
+      node_store_.erase(node.fid_);
       hot_list_.erase(it);
       --curr_size_;
       return true;
@@ -52,42 +55,48 @@ auto LRUKReplacer::Evict(frame_id_t *frame_id) -> bool {
   return false;
 }
 
-void LRUKReplacer::RecordAccess(frame_id_t frame_id, AccessType access_type) {
+void LRUKReplacer::RecordAccess(frame_id_t frame_id, [[maybe_unused]] AccessType access_type) {
   std::lock_guard<std::mutex> latch(latch_);
+  ++current_timestamp_;
   auto node_it = node_store_.find(frame_id);
   if (node_it == node_store_.end()) {
-    std::list<frame_id_t>::iterator list_it;
+    auto [store_it, _] =
+        node_store_.emplace(frame_id, LRUKNode{{current_timestamp_}, {}, {}, frame_id, access_type, false});
+    LRUKNode &node = store_it->second;
     if (access_type == AccessType::Get) {
-      list_it = warm_list_.insert(warm_list_.end(), frame_id);
-    } else {
-      list_it = cold_list_.insert(cold_list_.end(), frame_id);
+      auto warm_it = warm_list_.insert(cold_list_.end(), &node);
+      node.cold_it_ = warm_it;
+      return;
     }
-    node_store_.emplace(frame_id, LRUKNode{list_it, 1, access_type, false});
+    auto cold_it = cold_list_.insert(cold_list_.end(), &node);
+    node.cold_it_ = cold_it;
     return;
   }
   LRUKNode &node = node_it->second;
-  if (node.access_count_ >= k_) {
-    hot_list_.erase(node.list_it_);
-    hot_list_.emplace_back(frame_id);
-    node.list_it_ = --hot_list_.end();
+  if (node.accessed_time_.size() >= k_) {
+    hot_list_.erase(node.hot_it_);
+    node.accessed_time_.pop_front();
+    node.accessed_time_.emplace_back(current_timestamp_);
+    auto [hot_it, _] = hot_list_.emplace(&node);
+    node.hot_it_ = hot_it;
     return;
   }
-  ++node.access_count_;
-  if (node.access_count_ >= k_) {
-    if (access_type == AccessType::Get) {
-      warm_list_.erase(node.list_it_);
+  node.accessed_time_.emplace_back(current_timestamp_);
+  if (node.accessed_time_.size() >= k_) {
+    if (node.access_type_ == AccessType::Get) {
+      warm_list_.erase(node.cold_it_);
     } else {
-      cold_list_.erase(node.list_it_);
+      cold_list_.erase(node.cold_it_);
     }
-    hot_list_.emplace_back(frame_id);
-    node.list_it_ = --hot_list_.end();
+    auto [hot_it, _] = hot_list_.emplace(&node);
+    node.hot_it_ = hot_it;
     return;
   }
-  if (access_type != node.access_type_ && access_type == AccessType::Get) {
-    cold_list_.erase(node.list_it_);
-    warm_list_.emplace_back(frame_id);
-    node.list_it_ = --warm_list_.end();
-    node.access_type_ = AccessType::Get;
+  if (node.access_type_ != access_type && access_type == AccessType::Get) {
+    cold_list_.erase(node.cold_it_);
+    auto warm_it = warm_list_.insert(warm_list_.end(), &node);
+    node.cold_it_ = warm_it;
+    return;
   }
 }
 
@@ -111,14 +120,12 @@ void LRUKReplacer::Remove(frame_id_t frame_id) {
     throw bustub::Exception("Remove non-evictable node frame!");
   }
   --curr_size_;
-  if (node.access_count_ >= k_) {
-    hot_list_.erase(node.list_it_);
+  if (node.accessed_time_.size() >= k_) {
+    hot_list_.erase(node.hot_it_);
+  } else if (node.access_type_ == AccessType::Get) {
+    warm_list_.erase(node.cold_it_);
   } else {
-    if (node.access_type_ == AccessType::Get) {
-      warm_list_.erase(node.list_it_);
-    } else {
-      cold_list_.erase(node.list_it_);
-    }
+    cold_list_.erase(node.cold_it_);
   }
   node_store_.erase(node_it);
 }
