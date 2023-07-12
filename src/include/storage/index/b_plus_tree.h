@@ -57,6 +57,12 @@ class Context {
   auto IsRootPage(page_id_t page_id) -> bool { return page_id == root_page_id_; }
 };
 
+template <typename KeyType>
+class BPlusTreeSplitContext {
+ public:
+  std::pair<KeyType, page_id_t> new_child_;
+};
+
 #define BPLUSTREE_TYPE BPlusTree<KeyType, ValueType, KeyComparator>
 
 // Main class providing the API for the Interactive B+ Tree.
@@ -64,6 +70,7 @@ INDEX_TEMPLATE_ARGUMENTS
 class BPlusTree {
   using InternalPage = BPlusTreeInternalPage<KeyType, page_id_t, KeyComparator>;
   using LeafPage = BPlusTreeLeafPage<KeyType, ValueType, KeyComparator>;
+  using SplitContext = BPlusTreeSplitContext<KeyType>;
 
  public:
   explicit BPlusTree(std::string name, page_id_t header_page_id, BufferPoolManager *buffer_pool_manager,
@@ -133,15 +140,10 @@ class BPlusTree {
 
   // auto NewLeafAsRoot() -> void;
 
-  auto SplitHead(const KeyType &key) -> void;
-  auto SplitInternal(const KeyType &key, std::deque<WritePageGuard> *write_set)
-      -> std::optional<std::pair<KeyType, page_id_t>>;
-  auto SplitLeaf(const KeyType &key, std::deque<WritePageGuard> *write_set)
-      -> std::optional<std::pair<KeyType, page_id_t>>;
-
-  // auto SplitHead(SplitContext<KeyType> *ctx) -> void;
-  // auto SplitInternal(SplitContext<KeyType> *ctx) -> void;
-  // auto SplitLeaf(SplitContext<KeyType> *ctx) -> void;
+  auto Split(const KeyType &key, const ValueType &value, Transaction *txn) -> void;
+  auto SplitHeader(BPlusTreeHeaderPage *page, SplitContext *ctx) -> void;
+  auto SplitInternal(InternalPage *page, SplitContext *ctx) -> void;
+  auto SplitLeaf(LeafPage *page, SplitContext *ctx) -> void;
 
   // member variable
   std::string index_name_;

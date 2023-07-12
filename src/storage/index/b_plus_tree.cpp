@@ -56,7 +56,6 @@ auto BPLUSTREE_TYPE::GetValue(const KeyType &key, std::vector<ValueType> *result
   // if (header_page->root_page_id_ == INVALID_PAGE_ID) {
   //   return false;
   // }
-
   guard = bpm_->FetchPageRead(header_page->root_page_id_);
   const auto *internal_page = guard.As<InternalPage>();
   while (!internal_page->IsLeafPage()) {
@@ -113,97 +112,99 @@ auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value, Transact
   if (leaf_page->IsFull()) {
     // Split the pages.
     leaf_guard.Drop();
-    SplitHead(key);
+    Split(key, value, txn);
   }
   return true;
 }
 
 INDEX_TEMPLATE_ARGUMENTS
-auto BPLUSTREE_TYPE::SplitHead(const KeyType &key) -> void {
+auto BPLUSTREE_TYPE::Split(const KeyType &key, const ValueType &value, Transaction *txn) -> void {
   std::deque<WritePageGuard> write_set{};
   write_set.emplace_back(bpm_->FetchPageWrite(header_page_id_));
-  WritePageGuard &header_guard = write_set.back();
-  const auto *const_header_page = header_guard.As<BPlusTreeHeaderPage>();
+  const auto *const_header_page = write_set.back().As<BPlusTreeHeaderPage>();
   write_set.emplace_back(bpm_->FetchPageWrite(const_header_page->root_page_id_));
+  const auto *const_internal_page = write_set.back().As<InternalPage>();
 
-  auto tuple = SplitInternal(key, &write_set);
-  if (tuple.has_value()) {
-    auto [new_key, new_child_page_id] = tuple.value();
-    auto *header_page = header_guard.AsMut<BPlusTreeHeaderPage>();
-    page_id_t old_child_page_id = header_page->root_page_id_;
-    page_id_t new_root_page_id;
-    BasicPageGuard internal_guard = bpm_->NewPageGuarded(&new_root_page_id);
-    auto *internal_page = internal_guard.AsMut<InternalPage>();
-    internal_page->Init(internal_max_size_);
-    internal_page->SetValueAt(0, old_child_page_id);
-    internal_page->SetKeyValueAt(1, new_key, new_child_page_id);
-    header_page->root_page_id_ = new_root_page_id;
-  }
-}
-
-INDEX_TEMPLATE_ARGUMENTS
-auto BPLUSTREE_TYPE::SplitInternal(const KeyType &key, std::deque<WritePageGuard> *write_set)
-    -> std::optional<std::pair<KeyType, page_id_t>> {
-  WritePageGuard &internal_guard = write_set->back();
-  const auto *const_internal_page = internal_guard.As<InternalPage>();
-  if (const_internal_page->IsLeafPage()) {
-    return SplitLeaf(key, write_set);
-  }
-  if (!const_internal_page->IsFull()) {
-    while (write_set->size() > 1) {
-      write_set->pop_front();
+  while (!const_internal_page->IsLeafPage()) {
+    if (!const_internal_page->IsFull()) {
+      while (write_set.size() > 1) {
+        write_set.pop_front();
+      }
     }
+    page_id_t child_page_id = const_internal_page->GetValue(key, comparator_);
+    write_set.emplace_back(bpm_->FetchPageWrite(child_page_id));
+    const_internal_page = write_set.back().As<InternalPage>();
   }
-
-  write_set->emplace_back(bpm_->FetchPageWrite(const_internal_page->GetValue(key, comparator_)));
-  auto tuple = SplitInternal(key, write_set);
-  if (tuple.has_value()) {
-    auto [new_key, new_child_page_id] = tuple.value();
-    auto *internal_page = internal_guard.AsMut<InternalPage>();
-    if (!internal_page->IsFull()) {
-      internal_page->Insert(new_key, new_child_page_id, comparator_);
-      write_set->clear();
-      return std::nullopt;
-    }
-    page_id_t new_page_id;
-
-    BasicPageGuard new_internal_guard = bpm_->NewPageGuarded(&new_page_id);
-    auto *new_internal_page = new_internal_guard.AsMut<InternalPage>();
-    new_internal_page->Init(internal_max_size_);
-
-    int mid_index = (internal_page->GetMaxSize() + 1) / 2;
-    int insert_pos = internal_page->UpperBound(new_key, comparator_);
-
-    if (insert_pos < mid_index) {
-      internal_page->MoveRange(new_internal_page, mid_index - 1, internal_page->GetSize(), 0);
-      internal_page->Insert(new_key, new_child_page_id, comparator_);
-    } else if (insert_pos == mid_index) {
-      internal_page->MoveRange(new_internal_page, mid_index, internal_page->GetSize(), 1);
-      new_internal_page->SetKeyValueAt(0, new_key, new_child_page_id);
-    } else {
-      internal_page->MoveRange(new_internal_page, mid_index, internal_page->GetSize(), 0);
-      new_internal_page->Insert(new_key, new_child_page_id, comparator_);
-    }
-    internal_page->SetSize(mid_index);
-    new_internal_page->SetSize(internal_page->GetMaxSize() + 1 - mid_index);
-    write_set->pop_back();
-    return {{new_internal_page->KeyAt(0), new_page_id}};
-  }
-  return std::nullopt;
-}
-
-INDEX_TEMPLATE_ARGUMENTS
-auto BPLUSTREE_TYPE::SplitLeaf(const KeyType &key, std::deque<WritePageGuard> *write_set)
-    -> std::optional<std::pair<KeyType, page_id_t>> {
-  WritePageGuard &leaf_guard = write_set->back();
-  const auto *const_leaf_page = leaf_guard.As<LeafPage>();
+  const auto *const_leaf_page = write_set.back().As<LeafPage>();
   if (!const_leaf_page->IsFull()) {
-    write_set->clear();
-    return std::nullopt;
+    write_set.clear();
+    return;
   }
-  auto *leaf_page = leaf_guard.AsMut<LeafPage>();
-  page_id_t new_page_id;
 
+  SplitContext ctx{};
+  while (!write_set.empty()) {
+    WritePageGuard &write_guard = write_set.back();
+    if (write_guard.PageId() == header_page_id_) {
+      SplitHeader(write_guard.AsMut<BPlusTreeHeaderPage>(), &ctx);
+    } else if (write_guard.As<BPlusTreePage>()->IsLeafPage()) {
+      SplitLeaf(write_guard.AsMut<LeafPage>(), &ctx);
+    } else {
+      SplitInternal(write_guard.AsMut<InternalPage>(), &ctx);
+    }
+    write_set.pop_back();
+  }
+}
+
+INDEX_TEMPLATE_ARGUMENTS
+auto BPLUSTREE_TYPE::SplitHeader(BPlusTreeHeaderPage *header_page, SplitContext *ctx) -> void {
+  page_id_t old_child_page_id = header_page->root_page_id_;
+  page_id_t new_root_page_id;
+  const auto &[new_key, new_child_page_id] = ctx->new_child_;
+  BasicPageGuard internal_guard = bpm_->NewPageGuarded(&new_root_page_id);
+  auto *internal_page = internal_guard.AsMut<InternalPage>();
+  internal_page->Init(internal_max_size_);
+  internal_page->SetValueAt(0, old_child_page_id);
+  internal_page->SetKeyValueAt(1, new_key, new_child_page_id);
+  header_page->root_page_id_ = new_root_page_id;
+}
+
+INDEX_TEMPLATE_ARGUMENTS
+auto BPLUSTREE_TYPE::SplitInternal(InternalPage *internal_page, SplitContext *ctx) -> void {
+  const auto [new_child_key, new_child_page_id] = ctx->new_child_;
+  if (!internal_page->IsFull()) {
+    internal_page->Insert(new_child_key, new_child_page_id, comparator_);
+    return;
+  }
+  auto &[new_key, new_page_id] = ctx->new_child_;
+  BasicPageGuard new_internal_guard = bpm_->NewPageGuarded(&new_page_id);
+  auto *new_internal_page = new_internal_guard.AsMut<InternalPage>();
+  new_internal_page->Init(internal_max_size_);
+
+  int mid_index = internal_page->GetMinSize();
+  int insert_pos = internal_page->UpperBound(new_child_key, comparator_);
+
+  if (insert_pos < mid_index) {
+    internal_page->MoveRange(new_internal_page, mid_index - 1, internal_page->GetSize(), 0);
+    internal_page->Insert(new_child_key, new_child_page_id, comparator_);
+  } else if (insert_pos == mid_index) {
+    internal_page->MoveRange(new_internal_page, mid_index, internal_page->GetSize(), 1);
+    new_internal_page->SetKeyValueAt(0, new_child_key, new_child_page_id);
+  } else {
+    internal_page->MoveRange(new_internal_page, mid_index, internal_page->GetSize(), 0);
+    new_internal_page->Insert(new_child_key, new_child_page_id, comparator_);
+  }
+  internal_page->SetSize(mid_index);
+  new_internal_page->SetSize(internal_page->GetMaxSize() + 1 - mid_index);
+  new_key = new_internal_page->KeyAt(0);
+}
+
+INDEX_TEMPLATE_ARGUMENTS
+auto BPLUSTREE_TYPE::SplitLeaf(LeafPage *leaf_page, SplitContext *ctx) -> void {
+  auto &[new_key, new_page_id] = ctx->new_child_;
+
+  if (!leaf_page->IsFull()) {
+    return;
+  }
   BasicPageGuard new_leaf_guard = bpm_->NewPageGuarded(&new_page_id);
   auto *new_leaf_page = new_leaf_guard.AsMut<LeafPage>();
   new_leaf_page->Init(leaf_max_size_);
@@ -213,8 +214,7 @@ auto BPLUSTREE_TYPE::SplitLeaf(const KeyType &key, std::deque<WritePageGuard> *w
   new_leaf_page->SetSize(leaf_page->GetMaxSize() - leaf_page->GetMinSize());
   new_leaf_page->SetNextPageId(leaf_page->GetNextPageId());
   leaf_page->SetNextPageId(new_page_id);
-  write_set->pop_back();
-  return {{new_leaf_page->KeyAt(0), new_page_id}};
+  new_key = new_leaf_page->KeyAt(0);
 }
 
 /*****************************************************************************
