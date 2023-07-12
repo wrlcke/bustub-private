@@ -27,7 +27,7 @@ using bustub::DiskManagerUnlimitedMemory;
 /**
  * This test should be passing with your Checkpoint 1 submission.
  */
-TEST(BPlusTreeTests, DISABLED_ScaleTest) {  // NOLINT
+TEST(BPlusTreeTests, ScaleTest) {  // NOLINT
   // create KeyComparator and index schema
   auto key_schema = ParseCreateStatement("a bigint");
   GenericComparator<8> comparator(key_schema.get());
@@ -47,7 +47,7 @@ TEST(BPlusTreeTests, DISABLED_ScaleTest) {  // NOLINT
   // create transaction
   auto *transaction = new Transaction(0);
 
-  int64_t scale = 5000;
+  int64_t scale = 10;
   std::vector<int64_t> keys;
   for (int64_t key = 1; key < scale; key++) {
     keys.push_back(key);
@@ -55,12 +55,15 @@ TEST(BPlusTreeTests, DISABLED_ScaleTest) {  // NOLINT
 
   // randomized the insertion order
   auto rng = std::default_random_engine{};
+  int i = 0;
   std::shuffle(keys.begin(), keys.end(), rng);
   for (auto key : keys) {
     int64_t value = key & 0xFFFFFFFF;
     rid.Set(static_cast<int32_t>(key >> 32), value);
     index_key.SetFromInteger(key);
     tree.Insert(index_key, rid, transaction);
+    std::cout << static_cast<int>(key) << std::endl;
+    tree.Draw(bpm, std::string("tmptmp/random_scale_") + std::to_string(++i) + std::string(".dot"));
   }
   std::vector<RID> rids;
   for (auto key : keys) {

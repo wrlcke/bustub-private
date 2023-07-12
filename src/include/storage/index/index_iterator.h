@@ -32,12 +32,27 @@ class IndexIterator {
 
   auto operator++() -> IndexIterator &;
 
-  auto operator==(const IndexIterator &itr) const -> bool { throw std::runtime_error("unimplemented"); }
+  auto operator==(const IndexIterator &itr) const -> bool {
+    return curr_page_id_ == itr.curr_page_id_ && curr_index_ == itr.curr_index_;
+  }
 
-  auto operator!=(const IndexIterator &itr) const -> bool { throw std::runtime_error("unimplemented"); }
+  auto operator!=(const IndexIterator &itr) const -> bool {
+    return curr_page_id_ != itr.curr_page_id_ || curr_index_ != itr.curr_index_;
+  }
+
+  auto Start(BufferPoolManager *bpm, page_id_t start_page_id, int start_index = 0) -> INDEXITERATOR_TYPE;
+
+  auto Start(BufferPoolManager *bpm, ReadPageGuard start_page_guard, int start_index = 0) -> INDEXITERATOR_TYPE;
+
+  auto Terminate() -> INDEXITERATOR_TYPE;
 
  private:
   // add your own private member variables here
+
+  MappingType key_value_;
+  int curr_index_;
+  page_id_t curr_page_id_;
+  BufferPoolManager *bpm_;
 };
 
 }  // namespace bustub

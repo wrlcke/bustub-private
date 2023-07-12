@@ -58,6 +58,44 @@ class BPlusTreeLeafPage : public BPlusTreePage {
   auto GetNextPageId() const -> page_id_t;
   void SetNextPageId(page_id_t next_page_id);
   auto KeyAt(int index) const -> KeyType;
+  auto ValueAt(int index) const -> ValueType;
+
+  /**
+   * @param key the key to search for
+   * @param comp the comparator to use
+   * @return the first index in the leaf page whose key is not less than the given key
+   */
+  auto LowerBound(const KeyType &key, const KeyComparator &comp) const -> int;
+
+  /**
+   * @param other the other page
+   * @param start_index the start index
+   * @param end_index the end index
+   * @param other_start_index the other start index
+   */
+  auto MoveRange(B_PLUS_TREE_LEAF_PAGE_TYPE *other, int start_index, int end_index, int other_start_index) const
+      -> void;
+
+  /**
+   * @param key the key to insert
+   * @param value the value to insert
+   * @param comp the comparator to use
+   */
+  auto Insert(const KeyType &key, const ValueType &value, const KeyComparator &comp) -> bool;
+
+  /**
+   * @param key the key to remove
+   * @param comp the comparator to use
+   */
+  auto Remove(const KeyType &key, const KeyComparator &comp) -> void;
+
+  /**
+   * @param key the key to find
+   * @param[out] result the value to find
+   * @param comp the comparator to use
+   * @return true if key exists in the leaf page, false otherwise
+   */
+  auto GetValue(const KeyType &key, std::vector<ValueType> *result, const KeyComparator &comp) const -> bool;
 
   /**
    * @brief for test only return a string representing all keys in

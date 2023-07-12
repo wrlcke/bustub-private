@@ -60,11 +60,11 @@ class BPlusTreeInternalPage : public BPlusTreePage {
    */
   void SetKeyAt(int index, const KeyType &key);
 
-  /**
-   *
-   * @param value the value to search for
-   */
-  auto ValueIndex(const ValueType &value) const -> int;
+  // /**
+  //  *
+  //  * @param value the value to search for
+  //  */
+  // auto ValueIndex(const ValueType &value) const -> int;
 
   /**
    *
@@ -72,6 +72,55 @@ class BPlusTreeInternalPage : public BPlusTreePage {
    * @return the value at the index
    */
   auto ValueAt(int index) const -> ValueType;
+
+  /**
+   *
+   * @param index the index
+   * @param value the value to set
+   */
+  void SetValueAt(int index, const ValueType &value);
+
+  /**
+   * @param index the index
+   * @param key the key to set
+   * @param value the value to set
+   */
+  void SetKeyValueAt(int index, const KeyType &key, const ValueType &value);
+
+  /**
+   * @param key the key to search for
+   * @param comp the comparator to use
+   * @return the first index in the internal page whose key is greater than the given key
+   */
+  auto UpperBound(const KeyType &key, const KeyComparator &comp) const -> int;
+
+  /**
+   * @param other the other page
+   * @param start_index the start index
+   * @param end_index the end index
+   * @param other_start_index the other start index
+   */
+  auto MoveRange(B_PLUS_TREE_INTERNAL_PAGE_TYPE *other, int start_index, int end_index, int other_start_index) const
+      -> void;
+
+  /**
+   * @param key the key to insert
+   * @param value the value to insert
+   * @param comp the comparator to use
+   */
+  auto Insert(const KeyType &key, const ValueType &value, const KeyComparator &comp) -> void;
+
+  /**
+   * @param key the key to remove
+   * @param comp the comparator to use
+   */
+  auto Remove(const KeyType &key, const KeyComparator &comp) -> void;
+
+  /**
+   * @param key the key to find
+   * @param comp the comparator to use
+   */
+  auto GetValue(const KeyType &key, const KeyComparator &comp) const -> ValueType;
 
   /**
    * @brief For test only, return a string representing all keys in

@@ -17,6 +17,7 @@
 #include <queue>
 #include <shared_mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "common/config.h"
@@ -82,7 +83,7 @@ class BPlusTree {
   auto GetValue(const KeyType &key, std::vector<ValueType> *result, Transaction *txn = nullptr) -> bool;
 
   // Return the page id of the root node
-  auto GetRootPageId() -> page_id_t;
+  auto GetRootPageId() const -> page_id_t;
 
   // Index iterator
   auto Begin() -> INDEXITERATOR_TYPE;
@@ -129,6 +130,18 @@ class BPlusTree {
    * @return PrintableNode
    */
   auto ToPrintableBPlusTree(page_id_t root_id) -> PrintableBPlusTree;
+
+  // auto NewLeafAsRoot() -> void;
+
+  auto SplitHead(const KeyType &key) -> void;
+  auto SplitInternal(const KeyType &key, std::deque<WritePageGuard> *write_set)
+      -> std::optional<std::pair<KeyType, page_id_t>>;
+  auto SplitLeaf(const KeyType &key, std::deque<WritePageGuard> *write_set)
+      -> std::optional<std::pair<KeyType, page_id_t>>;
+
+  // auto SplitHead(SplitContext<KeyType> *ctx) -> void;
+  // auto SplitInternal(SplitContext<KeyType> *ctx) -> void;
+  // auto SplitLeaf(SplitContext<KeyType> *ctx) -> void;
 
   // member variable
   std::string index_name_;
