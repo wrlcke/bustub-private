@@ -16,7 +16,7 @@
 #include "test_util.h"  // NOLINT
 
 namespace bustub {
-
+#define MYDEBUG1
 bool BPlusTreeLockBenchmarkCall(size_t num_threads, int leaf_node_size, bool with_global_mutex) {
   bool success = true;
   std::vector<int64_t> insert_keys;
@@ -51,13 +51,34 @@ bool BPlusTreeLockBenchmarkCall(size_t num_threads, int leaf_node_size, bool wit
         int64_t value = key & 0xFFFFFFFF;
         rid.Set(static_cast<int32_t>(key >> 32), value);
         index_key.SetFromInteger(key);
+#ifdef MYDEBUG
+        std::stringstream ss;
+        ss << std::this_thread::get_id();
+        LOG_DEBUG("Thread %ld id: %s Inserting key %ld", i + 2, ss.str().c_str(), key);
+        if (with_global_mutex) {
+          mtx.lock();
+          LOG_DEBUG("Thread %ld id: %s Get global mutex when insert key %ld", i + 2, ss.str().c_str(), key);
+        } else {
+          LOG_DEBUG("Thread %ld id %s Get local mutex when insert key %ld", i + 2, ss.str().c_str(), key);
+        }
+#else
         if (with_global_mutex) {
           mtx.lock();
         }
+#endif
         tree.Insert(index_key, rid, transaction);
+#ifndef MYDEBUG
         if (with_global_mutex) {
           mtx.unlock();
         }
+#else
+        if (with_global_mutex) {
+          LOG_DEBUG("Thread %ld id: %s Release global mutex when insert key %ld", i + 2, ss.str().c_str(), key);
+          mtx.unlock();
+        } else {
+          LOG_DEBUG("Thread %ld id: %s Insert key %ld done", i + 2, ss.str().c_str(), key);
+        }
+#endif
       }
       delete transaction;
     };
