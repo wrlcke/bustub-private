@@ -59,6 +59,12 @@ class BPlusTreeLeafPage : public BPlusTreePage {
   void SetNextPageId(page_id_t next_page_id);
   auto KeyAt(int index) const -> KeyType;
   auto ValueAt(int index) const -> ValueType;
+  void SetKeyValueAt(int index, const KeyType &key, const ValueType &value);
+  void RemoveAt(int index);
+  auto HasValue(const KeyType &key, const KeyComparator &copm) const -> bool;
+  inline auto LastKey() const -> KeyType { return KeyAt(GetSize() - 1); }
+  inline auto LastValue() const -> ValueType { return ValueAt(GetSize() - 1); }
+  inline auto RemoveLast() -> void { IncreaseSize(-1); }
 
   /**
    * @param key the key to search for
@@ -73,15 +79,14 @@ class BPlusTreeLeafPage : public BPlusTreePage {
    * @param end_index the end index
    * @param other_start_index the other start index
    */
-  auto MoveRange(B_PLUS_TREE_LEAF_PAGE_TYPE *other, int start_index, int end_index, int other_start_index) const
-      -> void;
+  auto MoveRange(B_PLUS_TREE_LEAF_PAGE_TYPE *other, int start_index, int end_index, int other_start_index) -> void;
 
   /**
    * @param key the key to insert
    * @param value the value to insert
    * @param comp the comparator to use
    */
-  auto Insert(const KeyType &key, const ValueType &value, const KeyComparator &comp) -> bool;
+  auto Insert(const KeyType &key, const ValueType &value, const KeyComparator &comp) -> void;
 
   /**
    * @param key the key to remove

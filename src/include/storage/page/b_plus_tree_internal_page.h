@@ -88,6 +88,11 @@ class BPlusTreeInternalPage : public BPlusTreePage {
   void SetKeyValueAt(int index, const KeyType &key, const ValueType &value);
 
   /**
+   * @param index the index to remove
+   */
+  void RemoveAt(int index);
+
+  /**
    * @param key the key to search for
    * @param comp the comparator to use
    * @return the first index in the internal page whose key is greater than the given key
@@ -100,8 +105,7 @@ class BPlusTreeInternalPage : public BPlusTreePage {
    * @param end_index the end index
    * @param other_start_index the other start index
    */
-  auto MoveRange(B_PLUS_TREE_INTERNAL_PAGE_TYPE *other, int start_index, int end_index, int other_start_index) const
-      -> void;
+  auto MoveRange(B_PLUS_TREE_INTERNAL_PAGE_TYPE *other, int start_index, int end_index, int other_start_index) -> void;
 
   /**
    * @param key the key to insert
@@ -121,6 +125,10 @@ class BPlusTreeInternalPage : public BPlusTreePage {
    * @param comp the comparator to use
    */
   auto GetValue(const KeyType &key, const KeyComparator &comp) const -> ValueType;
+
+  inline auto LastKey() const -> KeyType { return KeyAt(GetSize() - 1); }
+  inline auto LastValue() const -> ValueType { return ValueAt(GetSize() - 1); }
+  inline auto RemoveLast() -> void { IncreaseSize(-1); }
 
   /**
    * @brief For test only, return a string representing all keys in

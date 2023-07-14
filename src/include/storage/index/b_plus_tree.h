@@ -60,7 +60,18 @@ class Context {
 template <typename KeyType>
 class BPlusTreeSplitContext {
  public:
-  std::pair<KeyType, page_id_t> new_child_;
+  KeyType new_key_;
+  page_id_t new_page_id_;
+};
+
+template <typename KeyType>
+class BPlusTreeMergeContext {
+ public:
+  enum OperationType { Remove = 0, UpdateKey, UpdateRoot, Finish };
+  KeyType key_;
+  page_id_t page_id_;
+  KeyType parent_key_;
+  OperationType op_type_;
 };
 
 #define BPLUSTREE_TYPE BPlusTree<KeyType, ValueType, KeyComparator>
@@ -71,6 +82,7 @@ class BPlusTree {
   using InternalPage = BPlusTreeInternalPage<KeyType, page_id_t, KeyComparator>;
   using LeafPage = BPlusTreeLeafPage<KeyType, ValueType, KeyComparator>;
   using SplitContext = BPlusTreeSplitContext<KeyType>;
+  using MergeContext = BPlusTreeMergeContext<KeyType>;
 
  public:
   explicit BPlusTree(std::string name, page_id_t header_page_id, BufferPoolManager *buffer_pool_manager,
@@ -140,10 +152,60 @@ class BPlusTree {
 
   // auto NewLeafAsRoot() -> void;
 
+  /**
+   * Split the leaf page which contains the key, and restructur the tree.
+   * 1. Traverse down the tree to find the target leaf page,
+   *  and store the pages that you need to modify (full) on the path in a write set.
+   * 2. Travese reversely along the write set, split each page,
+   *  storing the new key and page ID in the split context to pass it to parent.
+   * 2.1 During the reverse traversal, all pages except the front one in the set should be split
+   *  because the initial traversal ensured that all pages on the path are full except the first one.
+   *  Traverse the set and perform different splitting based on page types, and naturally exit the loop.
+   * 2.2 For the header page, which can only be at the front of the write set (the end of the reverse traversal),
+   *  create a new internal page. Initialize it with the old root page ID and the new page ID
+   *  with the new key, and set the new root page ID to be the ID of the created internal page.
+   * 2.3 For internal pages, receive the key and page ID in the split context from the child page.
+   *  If the internal page is not full (which is the front of the write set), simply insert the key
+   *  and page ID. Otherwise, split the page and set the new key and page ID in the split context.
+   * 2.4 For leaf pages, they will always be at the back of the write set (the beginning of the reverse traversal).
+   *  Create a new leaf page, split it, set the new page, and fill the context.
+   */
   auto Split(const KeyType &key, const ValueType &value, Transaction *txn) -> void;
   auto SplitHeader(BPlusTreeHeaderPage *page, SplitContext *ctx) -> void;
   auto SplitInternal(InternalPage *page, SplitContext *ctx) -> void;
   auto SplitLeaf(LeafPage *page, SplitContext *ctx) -> void;
+
+  /** Merge or redistribute the leaf page containg the key, and restructur the tree.
+   * 1. Traverse down the tree to find the target leaf page,
+   *  and store the pages that you need to modify (less than or equals to half full) on the path in a write set.
+   * 2. Travese reversely along the write set, merge or redistribute each page,
+   *  storing the new key or new root page id in the merge context to pass it to parent.
+   * 2.1 Starting from the back of the write set and moving backwards,
+   *  each page should choose either to merge with its sibling (removing one key from the parent and continue iteration)
+   *  or to redistribute with its sibling (updating one key from the parent and exit the loop).
+   *  There are four types of cases: leaf page, internal page, root page, and header page.
+   * 2.2 For leaf and internal pages that are not at the beginning (end of the reverse traversal) of the write set,
+   *  compare the sizes of their siblings and choose the larger one for merging or redistribution.
+   *  Pass the key that needs to be deleted or updated to the parent.
+   * 2.3 For the leaf pages at the beginning of the write set, which means it is a root leaf page
+   *  that is impossible, because after deleting and before merging we have checked the leaf page is
+   *  not the root page and is less than half full, so its parent internal page must be in the write set before it.
+   * 2.4 For the internal pages at the beginning of the write set, which means it is over half full.
+   *  Simply delete or update the key from the context.
+   * 2.5 For the root page, which can only be an internal page, it can occupy either the first position
+   *  or the second position in the write set.
+   *  If it is in the first position, it indicates that the root page is over half full, and the handling is
+   *  the same as described in 2.4.
+   *  If it is in the second position, it can only be right after the header page and be less than half full.
+   *  However, it cannot be merged or redistributed with its sibling. Delete or update the key from the context.
+   *  If the size of the root page is more than one, we exit the process.
+   *  Otherwise, we pass the only element, which is a page ID, as the new root page ID to the context.
+   * 2.6 For header page which can only be in the front of the write set, update the root page id from the context.
+   */
+  auto Merge(const KeyType &key, Transaction *txn) -> void;
+  auto MergeInternal(InternalPage *left_page, InternalPage *right_page, MergeContext *ctx) -> void;
+  auto MergeLeaf(LeafPage *left_page, LeafPage *right_page, MergeContext *ctx) -> void;
+  auto GetSibling(const KeyType &key, const InternalPage *parent_page, bool *is_left_sib) -> WritePageGuard;
 
   // member variable
   std::string index_name_;

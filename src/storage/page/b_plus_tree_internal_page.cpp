@@ -72,6 +72,17 @@ void B_PLUS_TREE_INTERNAL_PAGE_TYPE::SetKeyValueAt(int index, const KeyType &key
 }
 
 INDEX_TEMPLATE_ARGUMENTS
+void B_PLUS_TREE_INTERNAL_PAGE_TYPE::RemoveAt(int index) {
+  if (index + 1 < GetSize()) {
+    // for (int i = index; i < GetSize() - 1; i++) {
+    //   array_[i] = array_[i + 1];
+    // }
+    std::move(array_ + index + 1, array_ + GetSize(), array_ + index);
+  }
+  IncreaseSize(-1);
+}
+
+INDEX_TEMPLATE_ARGUMENTS
 auto B_PLUS_TREE_INTERNAL_PAGE_TYPE::UpperBound(const KeyType &key, const KeyComparator &comp) const -> int {
   int left = 1;
   int right = GetSize();
@@ -89,8 +100,10 @@ auto B_PLUS_TREE_INTERNAL_PAGE_TYPE::UpperBound(const KeyType &key, const KeyCom
 
 INDEX_TEMPLATE_ARGUMENTS
 auto B_PLUS_TREE_INTERNAL_PAGE_TYPE::MoveRange(B_PLUS_TREE_INTERNAL_PAGE_TYPE *other, int start_index, int end_index,
-                                               int other_start_index) const -> void {
+                                               int other_start_index) -> void {
   std::move(array_ + start_index, array_ + end_index, other->array_ + other_start_index);
+  SetSize(start_index);
+  other->SetSize(other_start_index + end_index - start_index);
 }
 
 INDEX_TEMPLATE_ARGUMENTS
@@ -108,7 +121,16 @@ auto B_PLUS_TREE_INTERNAL_PAGE_TYPE::Insert(const KeyType &key, const ValueType 
 }
 
 INDEX_TEMPLATE_ARGUMENTS
-auto B_PLUS_TREE_INTERNAL_PAGE_TYPE::Remove(const KeyType &key, const KeyComparator &comp) -> void {}
+auto B_PLUS_TREE_INTERNAL_PAGE_TYPE::Remove(const KeyType &key, const KeyComparator &comp) -> void {
+  int index = UpperBound(key, comp) - 1;
+  if (index + 1 < GetSize()) {
+    // for (int i = index; i < GetSize() - 1; i++) {
+    //   array_[i] = array_[i + 1];
+    // }
+    std::move(array_ + index + 1, array_ + GetSize(), array_ + index);
+  }
+  IncreaseSize(-1);
+}
 
 INDEX_TEMPLATE_ARGUMENTS
 auto B_PLUS_TREE_INTERNAL_PAGE_TYPE::GetValue(const KeyType &key, const KeyComparator &comp) const -> ValueType {

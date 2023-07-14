@@ -59,6 +59,27 @@ auto B_PLUS_TREE_LEAF_PAGE_TYPE::ValueAt(int index) const -> ValueType {
 }
 
 INDEX_TEMPLATE_ARGUMENTS
+void B_PLUS_TREE_LEAF_PAGE_TYPE::SetKeyValueAt(int index, const KeyType &key, const ValueType &value) {
+  array_[index].first = key;
+  array_[index].second = value;
+  SetSize(std::max(GetSize(), index + 1));
+}
+
+INDEX_TEMPLATE_ARGUMENTS
+void B_PLUS_TREE_LEAF_PAGE_TYPE::RemoveAt(int index) {
+  if (index + 1 < GetSize()) {
+    std::move(array_ + index + 1, array_ + GetSize(), array_ + index);
+  }
+  IncreaseSize(-1);
+}
+
+INDEX_TEMPLATE_ARGUMENTS
+auto B_PLUS_TREE_LEAF_PAGE_TYPE::HasValue(const KeyType &key, const KeyComparator &comp) const -> bool {
+  int index = LowerBound(key, comp);
+  return index != GetSize() && comp(key, KeyAt(index)) == 0;
+}
+
+INDEX_TEMPLATE_ARGUMENTS
 auto B_PLUS_TREE_LEAF_PAGE_TYPE::LowerBound(const KeyType &key, const KeyComparator &comp) const -> int {
   int left = 0;
   int right = GetSize();
@@ -76,16 +97,15 @@ auto B_PLUS_TREE_LEAF_PAGE_TYPE::LowerBound(const KeyType &key, const KeyCompara
 
 INDEX_TEMPLATE_ARGUMENTS
 auto B_PLUS_TREE_LEAF_PAGE_TYPE::MoveRange(B_PLUS_TREE_LEAF_PAGE_TYPE *other, int start_index, int end_index,
-                                           int other_start_index) const -> void {
+                                           int other_start_index) -> void {
   std::move(array_ + start_index, array_ + end_index, other->array_ + other_start_index);
+  SetSize(start_index);
+  other->SetSize(other_start_index + end_index - start_index);
 }
 
 INDEX_TEMPLATE_ARGUMENTS
-auto B_PLUS_TREE_LEAF_PAGE_TYPE::Insert(const KeyType &key, const ValueType &value, const KeyComparator &comp) -> bool {
+auto B_PLUS_TREE_LEAF_PAGE_TYPE::Insert(const KeyType &key, const ValueType &value, const KeyComparator &comp) -> void {
   int index = LowerBound(key, comp);
-  if (comp(key, KeyAt(index)) == 0) {
-    return false;
-  }
   if (index < GetSize()) {
     // for (int i = GetSize(); i > index; --i) {
     //   array_[i] = array_[i - 1];
@@ -94,11 +114,16 @@ auto B_PLUS_TREE_LEAF_PAGE_TYPE::Insert(const KeyType &key, const ValueType &val
   }
   array_[index] = {key, value};
   IncreaseSize(1);
-  return true;
 }
 
 INDEX_TEMPLATE_ARGUMENTS
-auto B_PLUS_TREE_LEAF_PAGE_TYPE::Remove(const KeyType &key, const KeyComparator &comp) -> void {}
+auto B_PLUS_TREE_LEAF_PAGE_TYPE::Remove(const KeyType &key, const KeyComparator &comp) -> void {
+  int index = LowerBound(key, comp);
+  if (index + 1 < GetSize()) {
+    std::move(array_ + index + 1, array_ + GetSize(), array_ + index);
+  }
+  IncreaseSize(-1);
+}
 
 INDEX_TEMPLATE_ARGUMENTS
 auto B_PLUS_TREE_LEAF_PAGE_TYPE::GetValue(const KeyType &key, std::vector<ValueType> *result,

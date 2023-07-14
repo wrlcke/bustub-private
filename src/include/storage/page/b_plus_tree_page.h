@@ -58,6 +58,8 @@ class BPlusTreePage {
 
   auto IsFull() const -> bool;
   auto IsHalfFull() const -> bool;
+  auto UnderHalfFull() const -> bool;
+  auto OverHalfFull() const -> bool;
 
  private:
   // member variable, attributes that both internal and leaf page share

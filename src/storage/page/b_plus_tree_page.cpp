@@ -43,6 +43,14 @@ auto BPlusTreePage::GetMinSize() const -> int {
 }
 
 auto BPlusTreePage::IsFull() const -> bool { return size_ == max_size_; }
-auto BPlusTreePage::IsHalfFull() const -> bool { return size_ >= max_size_ / 2; }
+auto BPlusTreePage::IsHalfFull() const -> bool {
+  return page_type_ == IndexPageType::INTERNAL_PAGE ? size_ == (max_size_ + 1) / 2 : size_ == max_size_ / 2;
+}
+auto BPlusTreePage::UnderHalfFull() const -> bool {
+  return page_type_ == IndexPageType::INTERNAL_PAGE ? size_ < (max_size_ + 1) / 2 : size_ < max_size_ / 2;
+}
+auto BPlusTreePage::OverHalfFull() const -> bool {
+  return page_type_ == IndexPageType::INTERNAL_PAGE ? size_ > (max_size_ + 1) / 2 : size_ > max_size_ / 2;
+}
 
 }  // namespace bustub
