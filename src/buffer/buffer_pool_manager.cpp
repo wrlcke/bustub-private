@@ -57,23 +57,23 @@ auto BufferPoolManager::NewPage(page_id_t *page_id) -> Page * {
   *page_id = AllocatePage();
   page_table_[*page_id] = frame_id;
 
-  // page_id_t old_page_id = page->page_id_;
-  // bool old_is_dirty = page->is_dirty_;
+  page_id_t old_page_id = page->page_id_;
+  bool old_is_dirty = page->is_dirty_;
   page->page_id_ = *page_id;
   page->pin_count_ = 1;
   page->is_dirty_ = false;
 
-  // if (old_is_dirty) {
-  //   disk_scheduler_.SubmitWriteRequest(old_page_id, page->data_);
-  // }
-  // page->ResetMemory();
-  // disk_scheduler_.SubmitWriteRequest(*page_id, page->data_);
+  if (old_is_dirty) {
+    disk_scheduler_.SubmitWriteRequest(old_page_id, page->data_);
+  }
+  page->ResetMemory();
+  disk_scheduler_.SubmitWriteRequest(*page_id, page->data_);
   latch.unlock();
 
-  // disk_scheduler_.ExecuteRequestAsync(*page_id);
-  // if (old_is_dirty) {
-  //   disk_scheduler_.ExecuteRequestAsync(old_page_id);
-  // }
+  disk_scheduler_.ExecuteWriteRequestAsync(*page_id);
+  if (old_is_dirty) {
+    disk_scheduler_.ExecuteWriteRequestAsync(old_page_id);
+  }
   return page;
 }
 
@@ -90,9 +90,9 @@ auto BufferPoolManager::FetchPage(page_id_t page_id, [[maybe_unused]] AccessType
       replacer_->SetEvictable(frame_id, false);
     }
     ++page->pin_count_;
-    latch_.unlock();
-    // disk_scheduler_.CheckRequestFinished(page_id);
-    return nullptr;
+    latch.unlock();
+    disk_scheduler_.CheckRequestFinished(page_id);
+    return page;
   }
 
   if (!free_list_.empty()) {
@@ -108,23 +108,23 @@ auto BufferPoolManager::FetchPage(page_id_t page_id, [[maybe_unused]] AccessType
   page_table_.erase(page->page_id_);
   page_table_[page_id] = frame_id;
 
-  // page_id_t old_page_id = page->page_id_;
-  // bool old_is_dirty = page->is_dirty_;
+  page_id_t old_page_id = page->page_id_;
+  bool old_is_dirty = page->is_dirty_;
   page->page_id_ = page_id;
   page->pin_count_ = 1;
   page->is_dirty_ = false;
 
-  // if (old_is_dirty) {
-  //   disk_scheduler_.SubmitWriteRequest(old_page_id, page->data_);
-  // }
-  // disk_scheduler_.SubmitReadRequest(page_id, page->data_);
+  if (old_is_dirty) {
+    disk_scheduler_.SubmitWriteRequest(old_page_id, page->data_);
+  }
+  disk_scheduler_.SubmitReadRequest(page_id, page->data_);
   latch.unlock();
 
-  // disk_scheduler_.ExecuteRequest(page_id);
-  // if (old_is_dirty) {
-  //   disk_scheduler_.ExecuteRequestAsync(old_page_id);
-  // }
-  return nullptr;
+  disk_scheduler_.ExecuteReadRequest(page_id);
+  if (old_is_dirty) {
+    disk_scheduler_.ExecuteWriteRequestAsync(old_page_id);
+  }
+  return page;
 }
 
 auto BufferPoolManager::UnpinPage(page_id_t page_id, bool is_dirty, [[maybe_unused]] AccessType access_type) -> bool {
