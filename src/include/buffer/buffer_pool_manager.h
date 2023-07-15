@@ -46,60 +46,60 @@ class DiskScheduler {
   explicit DiskScheduler(DiskManager *disk_manager) : disk_manager_(disk_manager) {}
 
   void SubmitReadRequest(page_id_t page_id, char *page_data) {
-    std::unique_lock<std::shared_mutex> latch(schedule_latch_);
-    DiskRequest &request = disk_requests_[page_id];
-    latch.unlock();
-    std::unique_lock<std::mutex> request_latch(request.request_latch_);
-    request.SetRead();
-    request.page_id_ = page_id;
-    request.read_page_data_ = page_data;
+    // std::unique_lock<std::shared_mutex> latch(schedule_latch_);
+    // DiskRequest &request = disk_requests_[page_id];
+    // latch.unlock();
+    // std::unique_lock<std::mutex> request_latch(request.request_latch_);
+    // request.SetRead();
+    // request.page_id_ = page_id;
+    // request.read_page_data_ = page_data;
   }
   void SubmitWriteRequest(page_id_t page_id, const char *page_data) {
-    std::unique_lock<std::shared_mutex> latch(schedule_latch_);
-    DiskRequest &request = disk_requests_[page_id];
-    latch.unlock();
-    std::unique_lock<std::mutex> request_latch(request.request_latch_);
-    delete[] request.write_page_data_;
-    char *copy_data = new char[BUSTUB_PAGE_SIZE];
-    memcpy(copy_data, page_data, BUSTUB_PAGE_SIZE);
-    request.SetWrite();
-    request.page_id_ = page_id;
-    request.write_page_data_ = copy_data;
+    // std::unique_lock<std::shared_mutex> latch(schedule_latch_);
+    // DiskRequest &request = disk_requests_[page_id];
+    // latch.unlock();
+    // std::unique_lock<std::mutex> request_latch(request.request_latch_);
+    // delete[] request.write_page_data_;
+    // char *copy_data = new char[BUSTUB_PAGE_SIZE];
+    // memcpy(copy_data, page_data, BUSTUB_PAGE_SIZE);
+    // request.SetWrite();
+    // request.page_id_ = page_id;
+    // request.write_page_data_ = copy_data;
   }
 
   void ExecuteRequest(page_id_t page_id) {
-    std::shared_lock<std::shared_mutex> latch(schedule_latch_);
-    DiskRequest &request = disk_requests_[page_id];
-    latch.unlock();
-    Execute(request);
+    // std::shared_lock<std::shared_mutex> latch(schedule_latch_);
+    // DiskRequest &request = disk_requests_[page_id];
+    // latch.unlock();
+    // Execute(request);
   }
 
   void ExecuteRequestAsync(page_id_t page_id) {
-    std::shared_lock<std::shared_mutex> latch(schedule_latch_);
-    DiskRequest &request = disk_requests_[page_id];
-    latch.unlock();
-    Execute(request);
+    // std::shared_lock<std::shared_mutex> latch(schedule_latch_);
+    // DiskRequest &request = disk_requests_[page_id];
+    // latch.unlock();
+    // Execute(request);
     // std::thread t(&DiskScheduler::Execute, this, std::ref(request));
     // t.detach();
   }
   void CheckRequestFinished(page_id_t page_id) { ExecuteRequest(page_id); }
 
   void Execute(DiskRequest &request) {
-    std::unique_lock<std::mutex> request_latch(request.request_latch_);
-    if (request.IsWrite()) {
-      disk_manager_->WritePage(request.page_id_, request.write_page_data_);
-      delete[] request.write_page_data_;
-      request.write_page_data_ = nullptr;
-      request.ClearWrite();
-    }
-    if (request.IsRead()) {
-      disk_manager_->ReadPage(request.page_id_, request.read_page_data_);
-      request.ClearRead();
-    }
+    // std::unique_lock<std::mutex> request_latch(request.request_latch_);
+    // if (request.IsWrite()) {
+    //   disk_manager_->WritePage(request.page_id_, request.write_page_data_);
+    //   delete[] request.write_page_data_;
+    //   request.write_page_data_ = nullptr;
+    //   request.ClearWrite();
+    // }
+    // if (request.IsRead()) {
+    //   disk_manager_->ReadPage(request.page_id_, request.read_page_data_);
+    //   request.ClearRead();
+    // }
   }
 
  private:
-  DiskManager *disk_manager_;
+  DiskManager *disk_manager_ __attribute__((__unused__));
   std::unordered_map<page_id_t, DiskRequest> disk_requests_;
   std::shared_mutex schedule_latch_;
 };
