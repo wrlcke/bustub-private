@@ -30,134 +30,49 @@ namespace bustub {
 
 class DiskScheduler {
  public:
-  class DiskRequest {
-   public:
-    char *read_page_data_;
-    page_id_t page_id_;
-    char *write_page_data_;
-    char read_write_;
-    std::mutex request_latch_;
-
-    auto IsRead() -> bool { return (read_write_ & 0x1) != 0; }
-    auto IsWrite() -> bool { return (read_write_ & 0x2) != 0; }
-    auto SetRead() -> void { read_write_ |= 0x1; }
-    auto SetWrite() -> void { read_write_ |= 0x2; }
-    auto ClearRead() -> void { read_write_ &= 0xfe; }
-    auto ClearWrite() -> void { read_write_ &= 0xfd; }
-  };
-  explicit DiskScheduler(DiskManager *disk_manager) : disk_manager_(disk_manager) { ThreadPoolInit(8); }
+  explicit DiskScheduler(DiskManager *disk_manager, size_t pool_size = 10) : disk_manager_(disk_manager) {
+    ThreadPoolInit(pool_size);
+  }
   ~DiskScheduler() { ThreadPoolDestroy(); }
 
-  void SubmitReadRequest(page_id_t page_id, char *page_data) {
-    std::unique_lock<std::shared_mutex> latch(schedule_latch_);
-    DiskRequest &request = disk_requests_[page_id];
-    latch.unlock();
-    std::unique_lock<std::mutex> request_latch(request.request_latch_);
-    request.SetRead();
-    request.page_id_ = page_id;
-    request.read_page_data_ = page_data;
-  }
-  void SubmitWriteRequest(page_id_t page_id, const char *page_data) {
-    std::unique_lock<std::shared_mutex> latch(schedule_latch_);
-    DiskRequest &request = disk_requests_[page_id];
-    latch.unlock();
-    std::unique_lock<std::mutex> request_latch(request.request_latch_);
-    delete[] request.write_page_data_;
-    char *copy_data = new char[BUSTUB_PAGE_SIZE];
-    memcpy(copy_data, page_data, BUSTUB_PAGE_SIZE);
-    request.SetWrite();
-    request.page_id_ = page_id;
-    request.write_page_data_ = copy_data;
-  }
-
-  void ExecuteReadRequest(page_id_t page_id) { ExecuteRequest(page_id, true); }
-  void ExecuteWriteRequest(page_id_t page_id) { ExecuteRequest(page_id, false); }
-  void ExecuteReadRequestAsync(page_id_t page_id) { ExecuteRequestAsync(page_id, true); }
-  void ExecuteWriteRequestAsync(page_id_t page_id) { ExecuteRequestAsync(page_id, false); }
-
-  void ExecuteRequest(page_id_t page_id, bool is_read) {
-    std::shared_lock<std::shared_mutex> latch(schedule_latch_);
-    DiskRequest &request = disk_requests_[page_id];
-    latch.unlock();
-    Execute(request, is_read);
-  }
-
-  void ExecuteRequestAsync(page_id_t page_id, bool is_read) {
-    std::shared_lock<std::shared_mutex> latch(schedule_latch_);
-    DiskRequest &request = disk_requests_[page_id];
-    latch.unlock();
-    ThreadPoolSubmit(&request, is_read);
-  }
-  void CheckRequestFinished(page_id_t page_id) { ExecuteRequest(page_id, true); }
-
-  void Execute(DiskRequest &request, bool is_read) {
-    std::unique_lock<std::mutex> request_latch(request.request_latch_);
-    if (request.IsWrite()) {
-      if (request.IsRead()) {
-        memcpy(request.read_page_data_, request.write_page_data_, BUSTUB_PAGE_SIZE);
-        request.ClearRead();
-      }
-      if (!is_read) {
-        disk_manager_->WritePage(request.page_id_, request.write_page_data_);
-        delete[] request.write_page_data_;
-        request.write_page_data_ = nullptr;
-        request.ClearWrite();
-      }
-    }
-    if (request.IsRead()) {
-      disk_manager_->ReadPage(request.page_id_, request.read_page_data_);
-      request.ClearRead();
-    }
-  }
+  void SubmitRead(page_id_t page_id, char *page_data);
+  void SubmitWrite(page_id_t page_id, const char *page_data);
+  void ExecuteRead(page_id_t page_id);
+  void ExecuteWrite(page_id_t page_id);
+  void ExecuteReadAsync(page_id_t page_id);
+  void ExecuteWriteAsync(page_id_t page_id);
+  void CheckPageLoaded(page_id_t page_id);
 
  private:
+  struct DiskRequest {
+    page_id_t page_id_;
+    bool need_read_;
+    bool need_write_;
+    char *read_page_data_;
+    char *write_page_data_;
+    std::mutex request_latch_;
+  };
+  enum ExecuteType { Read, Write };
+  struct ExecutionTask {
+    DiskRequest *request_;
+    ExecuteType type_;
+  };
+
   DiskManager *disk_manager_;
   std::unordered_map<page_id_t, DiskRequest> disk_requests_;
   std::shared_mutex schedule_latch_;
   std::vector<std::thread> thread_pool_;
-  std::deque<std::pair<DiskRequest *, bool>> task_queue_;
+  std::deque<ExecutionTask> task_queue_;
   std::mutex thread_pool_latch_;
   std::condition_variable thread_pool_cv_;
-  bool thread_pool_running_ = true;
+  bool thread_pool_shutdown_;
 
-  void ThreadPoolWorker() {
-    while (true) {
-      std::unique_lock<std::mutex> thread_pool_latch(thread_pool_latch_);
-      while (thread_pool_running_ && task_queue_.empty()) {
-        thread_pool_cv_.wait(thread_pool_latch);
-      }
-      if (!thread_pool_running_ && task_queue_.empty()) {
-        return;
-      }
-      auto [request, is_read] = task_queue_.front();
-      task_queue_.pop_front();
-      thread_pool_latch.unlock();
-      Execute(*request, is_read);
-    }
-  }
-
-  void ThreadPoolInit(size_t pool_size) {
-    thread_pool_.reserve(pool_size);
-    thread_pool_running_ = true;
-    for (size_t i = 0; i < pool_size; ++i) {
-      thread_pool_.emplace_back(&DiskScheduler::ThreadPoolWorker, this);
-    }
-  }
-
-  void ThreadPoolSubmit(DiskRequest *request, bool is_read) {
-    std::unique_lock<std::mutex> thread_pool_latch(thread_pool_latch_);
-    task_queue_.emplace_back(request, is_read);
-    thread_pool_latch.unlock();
-    thread_pool_cv_.notify_one();
-  }
-
-  void ThreadPoolDestroy() {
-    thread_pool_running_ = false;
-    thread_pool_cv_.notify_all();
-    for (auto &t : thread_pool_) {
-      t.join();
-    }
-  }
+  void ExecuteRead(DiskRequest &request);
+  void ExecuteWrite(DiskRequest &request);
+  void ThreadPoolWorker();
+  void ThreadPoolInit(size_t pool_size);
+  void ThreadPoolSubmit(DiskRequest *request, ExecuteType type);
+  void ThreadPoolDestroy();
 };
 
 /**
