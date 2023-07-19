@@ -35,6 +35,8 @@ namespace bustub {
  */
 INDEX_TEMPLATE_ARGUMENTS
 class BPlusTreeInternalPage : public BPlusTreePage {
+  class Range;
+
  public:
   // Deleted to disallow initialization
   BPlusTreeInternalPage() = delete;
@@ -88,16 +90,11 @@ class BPlusTreeInternalPage : public BPlusTreePage {
   void SetKeyValueAt(int index, const KeyType &key, const ValueType &value);
 
   /**
-   * @param index the index to remove
-   */
-  void RemoveAt(int index);
-
-  /**
    * @param key the key to search for
    * @param comp the comparator to use
    * @return the first index in the internal page whose key is greater than the given key
    */
-  auto UpperBound(const KeyType &key, const KeyComparator &comp) const -> int;
+  auto UpperBound(const KeyType &key, const KeyComparator &comp, int start_pos = 1) const -> int;
 
   /**
    * @param other the other page
@@ -129,6 +126,8 @@ class BPlusTreeInternalPage : public BPlusTreePage {
   inline auto LastKey() const -> KeyType { return KeyAt(GetSize() - 1); }
   inline auto LastValue() const -> ValueType { return ValueAt(GetSize() - 1); }
   inline auto RemoveLast() -> void { IncreaseSize(-1); }
+  auto InsertFromZero(const KeyType &key, const ValueType &value, const KeyComparator &comp) -> void;
+  auto Range(int start, int end) -> Range { return {this, start, (end == -1 ? GetSize() : end)}; }
 
   /**
    * @brief For test only, return a string representing all keys in
@@ -159,5 +158,20 @@ class BPlusTreeInternalPage : public BPlusTreePage {
  private:
   // Flexible array member for page data.
   MappingType array_[0];
+
+  class Range {
+   public:
+    BPlusTreeInternalPage *page_;
+    int start_index_;
+    int end_index_;
+  };
+
+ public:
+  friend void operator<<(BPlusTreeInternalPage *left, class Range &&right) {
+    right.page_->MoveRange(left, right.start_index_, right.end_index_, left->GetSize());
+  }
+  friend void operator>>(class Range &&left, BPlusTreeInternalPage *right) {
+    left.page_->MoveRange(right, left.start_index_, left.end_index_, 0);
+  }
 };
 }  // namespace bustub

@@ -157,6 +157,24 @@ auto main(int argc, char **argv) -> int {
     index.Insert(index_key, rid, nullptr);
   }
 
+  auto make_outf = [](int i = -1) {
+    std::string outf = "./tmptmptmp/out";
+    outf += i == -1 ? std::string("") : std::to_string(i);
+    outf += ".dot";
+    return outf;
+  };
+  auto make_log = [](int i, size_t key, int op) {
+    std::stringstream ss;
+    char s[10][10] = {"remove", "insert", "update"};
+    ss << i << ' ' << s[op] << " key " << static_cast<int>(key);
+    return ss.str();
+  };
+  std::atomic<int> tt = 0;
+  std::mutex mtx;
+  std::vector<std::string> logs;
+  index.Draw(bpm.get(), make_outf());
+#define MYDEBUG1
+
   fmt::print(stderr, "[info] benchmark start\n");
 
   BTreeTotalMetrics total_metrics;
@@ -165,7 +183,7 @@ auto main(int argc, char **argv) -> int {
   std::vector<std::thread> threads;
 
   for (size_t thread_id = 0; thread_id < BUSTUB_READ_THREAD; thread_id++) {
-    threads.emplace_back(std::thread([thread_id, &index, duration_ms, &total_metrics] {
+    threads.emplace_back(std::thread([thread_id, &index, duration_ms, &total_metrics, &tt, &logs, &mtx] {
       BTreeMetrics metrics(fmt::format("read  {:>2}", thread_id), duration_ms);
       metrics.Begin();
 
@@ -187,17 +205,32 @@ auto main(int argc, char **argv) -> int {
           index.GetValue(index_key, &rids);
 
           if (!KeyWillVanish(key) && rids.empty()) {
-            std::string msg = fmt::format("key not found: {}", key);
+            std::string msg = fmt::format("{} key not found: {}", tt, key);
+            mtx.lock();
+            for (auto &log : logs) {
+              std::cout << log << std::endl;
+            }
+            mtx.unlock();
             throw std::runtime_error(msg);
           }
 
           if (!KeyWillVanish(key) && !KeyWillChange(key)) {
             if (rids.size() != 1) {
-              std::string msg = fmt::format("key not found: {}", key);
+              std::string msg = fmt::format("{} key not found: {}", tt, key);
+              mtx.lock();
+              for (auto &log : logs) {
+                std::cout << log << std::endl;
+              }
+              mtx.unlock();
               throw std::runtime_error(msg);
             }
             if (static_cast<size_t>(rids[0].GetPageId()) != key || static_cast<size_t>(rids[0].GetSlotNum()) != key) {
-              std::string msg = fmt::format("invalid data: {} -> {}", key, rids[0].Get());
+              std::string msg = fmt::format("{} invalid data: {} -> {}", tt, key, rids[0].Get());
+              mtx.lock();
+              for (auto &log : logs) {
+                std::cout << log << std::endl;
+              }
+              mtx.unlock();
               throw std::runtime_error(msg);
             }
           }
@@ -211,50 +244,83 @@ auto main(int argc, char **argv) -> int {
   }
 
   for (size_t thread_id = 0; thread_id < BUSTUB_WRITE_THREAD; thread_id++) {
-    threads.emplace_back(std::thread([thread_id, &index, duration_ms, &total_metrics] {
-      BTreeMetrics metrics(fmt::format("write {:>2}", thread_id), duration_ms);
-      metrics.Begin();
+    threads.emplace_back(
+        std::thread([thread_id, &index, duration_ms, &total_metrics, &bpm, &tt, &mtx, &logs, &make_log, &make_outf] {
+          (void)bpm, (void)tt, (void)mtx, (void)logs, (void)make_log, (void)make_outf;
+          BTreeMetrics metrics(fmt::format("write {:>2}", thread_id), duration_ms);
+          metrics.Begin();
 
-      size_t key_start = TOTAL_KEYS / BUSTUB_WRITE_THREAD * thread_id;
-      size_t key_end = TOTAL_KEYS / BUSTUB_WRITE_THREAD * (thread_id + 1);
-      std::random_device r;
-      std::default_random_engine gen(r());
-      std::uniform_int_distribution<size_t> dis(key_start, key_end - 1);
+          size_t key_start = TOTAL_KEYS / BUSTUB_WRITE_THREAD * thread_id;
+          size_t key_end = TOTAL_KEYS / BUSTUB_WRITE_THREAD * (thread_id + 1);
+          std::random_device r;
+          std::default_random_engine gen(r());
+          std::uniform_int_distribution<size_t> dis(key_start, key_end - 1);
 
-      bustub::GenericKey<8> index_key;
-      bustub::RID rid;
+          bustub::GenericKey<8> index_key;
+          bustub::RID rid;
 
-      bool do_insert = false;
+          bool do_insert = false;
 
-      while (!metrics.ShouldFinish()) {
-        auto base_key = dis(gen);
-        size_t cnt = 0;
-        for (auto key = base_key; key < key_end && cnt < KEY_MODIFY_RANGE; key++, cnt++) {
-          if (KeyWillVanish(key)) {
-            uint32_t value = key;
-            rid.Set(value, value);
-            index_key.SetFromInteger(key);
-            if (do_insert) {
-              index.Insert(index_key, rid, nullptr);
-            } else {
-              index.Remove(index_key, nullptr);
+          while (!metrics.ShouldFinish()) {
+            auto base_key = dis(gen);
+            size_t cnt = 0;
+            for (auto key = base_key; key < key_end && cnt < KEY_MODIFY_RANGE; key++, cnt++) {
+              if (KeyWillVanish(key)) {
+                uint32_t value = key;
+                rid.Set(value, value);
+                index_key.SetFromInteger(key);
+#ifdef MYDEBUG
+                int x = ++tt;
+                {
+                  mtx.lock();
+
+                  logs.push_back(make_log(x, key, static_cast<int>(do_insert)));
+                  mtx.unlock();
+                }
+#endif
+                if (do_insert) {
+                  index.Insert(index_key, rid, nullptr);
+                } else {
+                  index.Remove(index_key, nullptr);
+                }
+#ifdef MYDEBUG
+                {
+                  mtx.lock();
+                  index.Draw(bpm.get(), make_outf(x));
+                  mtx.unlock();
+                }
+#endif
+                metrics.Tick();
+                metrics.Report();
+              } else if (KeyWillChange(key)) {
+                uint32_t value = key;
+                rid.Set(value, dis(gen));
+                index_key.SetFromInteger(key);
+#ifdef MYDEBUG
+                int x = ++tt;
+                {
+                  mtx.lock();
+                  logs.push_back(make_log(x, key, 2));
+                  mtx.unlock();
+                }
+#endif
+                index.Insert(index_key, rid, nullptr);
+#ifdef MYDEBUG
+                {
+                  mtx.lock();
+                  index.Draw(bpm.get(), make_outf(x));
+                  mtx.unlock();
+                }
+#endif
+                metrics.Tick();
+                metrics.Report();
+              }
             }
-            metrics.Tick();
-            metrics.Report();
-          } else if (KeyWillChange(key)) {
-            uint32_t value = key;
-            rid.Set(value, dis(gen));
-            index_key.SetFromInteger(key);
-            index.Insert(index_key, rid, nullptr);
-            metrics.Tick();
-            metrics.Report();
+            do_insert = !do_insert;
           }
-        }
-        do_insert = !do_insert;
-      }
 
-      total_metrics.ReportWrite(metrics.cnt_);
-    }));
+          total_metrics.ReportWrite(metrics.cnt_);
+        }));
   }
 
   for (auto &thread : threads) {

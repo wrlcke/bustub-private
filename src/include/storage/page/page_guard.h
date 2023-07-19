@@ -78,6 +78,8 @@ class BasicPageGuard {
     return reinterpret_cast<T *>(GetDataMut());
   }
 
+  void SetDead() { is_dead_ = true; }
+
  private:
   friend class ReadPageGuard;
   friend class WritePageGuard;
@@ -85,6 +87,7 @@ class BasicPageGuard {
   BufferPoolManager *bpm_{nullptr};
   Page *page_{nullptr};
   bool is_dirty_{false};
+  bool is_dead_{false};
 };
 
 class ReadPageGuard {
@@ -141,6 +144,8 @@ class ReadPageGuard {
   auto As() -> const T * {
     return guard_.As<T>();
   }
+
+  void SetDead() { guard_.SetDead(); }
 
  private:
   // You may choose to get rid of this and add your own private variables.
@@ -208,6 +213,8 @@ class WritePageGuard {
   auto AsMut() -> T * {
     return guard_.AsMut<T>();
   }
+
+  void SetDead() { guard_.SetDead(); }
 
  private:
   // You may choose to get rid of this and add your own private variables.

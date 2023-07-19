@@ -42,6 +42,8 @@ namespace bustub {
  */
 INDEX_TEMPLATE_ARGUMENTS
 class BPlusTreeLeafPage : public BPlusTreePage {
+  class Range;
+
  public:
   // Delete all constructor / destructor to ensure memory safety
   BPlusTreeLeafPage() = delete;
@@ -59,13 +61,8 @@ class BPlusTreeLeafPage : public BPlusTreePage {
   void SetNextPageId(page_id_t next_page_id);
   auto KeyAt(int index) const -> KeyType;
   auto ValueAt(int index) const -> ValueType;
-  void SetKeyValueAt(int index, const KeyType &key, const ValueType &value);
-  void RemoveAt(int index);
-  auto HasValue(const KeyType &key, const KeyComparator &copm) const -> bool;
-  inline auto LastKey() const -> KeyType { return KeyAt(GetSize() - 1); }
-  inline auto LastValue() const -> ValueType { return ValueAt(GetSize() - 1); }
-  inline auto RemoveLast() -> void { IncreaseSize(-1); }
-
+  auto HasValue(const KeyType &key, const KeyComparator &comp) const -> bool;
+  auto Range(int start, int end) -> Range { return {this, start, (end == -1 ? GetSize() : end)}; }
   /**
    * @param key the key to search for
    * @param comp the comparator to use
@@ -131,5 +128,21 @@ class BPlusTreeLeafPage : public BPlusTreePage {
   page_id_t next_page_id_;
   // Flexible array member for page data.
   MappingType array_[0];
+
+  class Range {
+   public:
+    BPlusTreeLeafPage *page_;
+    int start_index_;
+    int end_index_;
+  };
+
+ public:
+  friend void operator<<(BPlusTreeLeafPage *left, class Range &&right) {
+    right.page_->MoveRange(left, right.start_index_, right.end_index_, left->GetSize());
+  }
+  friend void operator>>(class Range &&left, BPlusTreeLeafPage *right) {
+    left.page_->MoveRange(right, left.start_index_, left.end_index_, 0);
+  }
 };
+
 }  // namespace bustub

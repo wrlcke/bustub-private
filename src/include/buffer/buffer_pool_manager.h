@@ -12,10 +12,12 @@
 
 #pragma once
 
+#include <deque>
 #include <list>
 #include <memory>
 #include <mutex>  // NOLINT
 #include <unordered_map>
+#include <vector>
 
 #include "buffer/lru_k_replacer.h"
 #include "common/config.h"
@@ -25,6 +27,53 @@
 #include "storage/page/page_guard.h"
 
 namespace bustub {
+
+class DiskScheduler {
+ public:
+  explicit DiskScheduler(DiskManager *disk_manager, size_t pool_size = 6) : disk_manager_(disk_manager) {
+    ThreadPoolInit(pool_size);
+  }
+  ~DiskScheduler() { ThreadPoolDestroy(); }
+
+  void SubmitRead(page_id_t page_id, char *page_data);
+  void SubmitWrite(page_id_t page_id, const char *page_data);
+  void ExecuteRead(page_id_t page_id);
+  void ExecuteWrite(page_id_t page_id);
+  void ExecuteReadAsync(page_id_t page_id);
+  void ExecuteWriteAsync(page_id_t page_id);
+  void CheckPageLoaded(page_id_t page_id);
+
+ private:
+  struct DiskRequest {
+    page_id_t page_id_;
+    bool need_read_;
+    bool need_write_;
+    char *read_page_data_;
+    char *write_page_data_;
+    std::mutex request_latch_;
+  };
+  enum ExecuteType { Read, Write };
+  struct ExecutionTask {
+    DiskRequest *request_;
+    ExecuteType type_;
+  };
+
+  DiskManager *disk_manager_;
+  std::unordered_map<page_id_t, DiskRequest> disk_requests_;
+  std::shared_mutex schedule_latch_;
+  std::vector<std::thread> thread_pool_;
+  std::deque<ExecutionTask> task_queue_;
+  std::mutex thread_pool_latch_;
+  std::condition_variable thread_pool_cv_;
+  bool thread_pool_shutdown_;
+
+  void ExecuteRead(DiskRequest &request);
+  void ExecuteWrite(DiskRequest &request);
+  void ThreadPoolWorker();
+  void ThreadPoolInit(size_t pool_size);
+  void ThreadPoolSubmit(DiskRequest *request, ExecuteType type);
+  void ThreadPoolDestroy();
+};
 
 /**
  * BufferPoolManager reads disk pages to and from its internal buffer pool.
@@ -192,7 +241,8 @@ class BufferPoolManager {
   std::list<frame_id_t> free_list_;
   /** This latch protects shared data structures. We recommend updating this comment to describe what it protects. */
   std::mutex latch_;
-  std::mutex *frame_latches_;
+  /** Disk scheduler */
+  DiskScheduler disk_scheduler_;
 
   /**
    * @brief Allocate a page on disk. Caller should acquire the latch before calling this function.

@@ -14,6 +14,9 @@ BasicPageGuard::BasicPageGuard(BasicPageGuard &&that) noexcept {
 void BasicPageGuard::Drop() {
   if (bpm_ != nullptr && page_ != nullptr) {
     bpm_->UnpinPage(page_->GetPageId(), is_dirty_);
+    if (is_dead_) {
+      bpm_->DeletePage(page_->GetPageId());
+    }
     bpm_ = nullptr;
     page_ = nullptr;
   }

@@ -7,7 +7,7 @@
 #include "storage/index/b_plus_tree.h"
 
 namespace bustub {
-#define MYDEBUG1
+
 INDEX_TEMPLATE_ARGUMENTS
 BPLUSTREE_TYPE::BPlusTree(std::string name, page_id_t header_page_id, BufferPoolManager *buffer_pool_manager,
                           const KeyComparator &comparator, int leaf_max_size, int internal_max_size)
@@ -20,9 +20,11 @@ BPLUSTREE_TYPE::BPlusTree(std::string name, page_id_t header_page_id, BufferPool
   // WritePageGuard guard = bpm_->FetchPageWrite(header_page_id_);
   // auto root_page = guard.AsMut<BPlusTreeHeaderPage>();
   // root_page->root_page_id_ = INVALID_PAGE_ID;
+  // header_page->tree_depth_ = 0;
   WritePageGuard header_guard = bpm_->FetchPageWrite(header_page_id_);
   auto *header_page = header_guard.AsMut<BPlusTreeHeaderPage>();
   BasicPageGuard leaf_guard = bpm_->NewPageGuarded(&header_page->root_page_id_);
+  header_page->tree_depth_ = 1;
   auto *leaf_page = leaf_guard.AsMut<LeafPage>();
   leaf_page->Init(leaf_max_size_);
 }
@@ -49,20 +51,15 @@ auto BPLUSTREE_TYPE::IsEmpty() const -> bool {
  */
 INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::GetValue(const KeyType &key, std::vector<ValueType> *result, Transaction *txn) -> bool {
-  // Declaration of context instance.
-  // Context ctx;
   ReadPageGuard guard = bpm_->FetchPageRead(header_page_id_);
   const auto *header_page = guard.As<BPlusTreeHeaderPage>();
-  // if (header_page->root_page_id_ == INVALID_PAGE_ID) {
-  //   return false;
-  // }
-  guard = bpm_->FetchPageRead(header_page->root_page_id_);
-  const auto *internal_page = guard.As<InternalPage>();
-  while (!internal_page->IsLeafPage()) {
-    page_id_t child_page_id = internal_page->GetValue(key, comparator_);
-    guard = bpm_->FetchPageRead(child_page_id);
-    internal_page = guard.As<InternalPage>();
+  page_id_t next_page_id = header_page->root_page_id_;
+  int distance_to_leaf = header_page->tree_depth_;
+  while (--distance_to_leaf > 0) {
+    guard = bpm_->FetchPageRead(next_page_id);
+    next_page_id = guard.As<InternalPage>()->GetValue(key, comparator_);
   }
+  guard = bpm_->FetchPageRead(next_page_id);
   const auto *leaf_page = guard.As<LeafPage>();
   return leaf_page->GetValue(key, result, comparator_);
 }
@@ -79,8 +76,6 @@ auto BPLUSTREE_TYPE::GetValue(const KeyType &key, std::vector<ValueType> *result
  */
 INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value, Transaction *txn) -> bool {
-  // Declaration of context instance.
-  // Context ctx;
   ReadPageGuard guard = bpm_->FetchPageRead(header_page_id_);
   const auto *header_page = guard.As<BPlusTreeHeaderPage>();
   page_id_t next_page_id = header_page->root_page_id_;
@@ -91,248 +86,189 @@ auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value, Transact
   //   header_page = guard.As<BPlusTreeHeaderPage>();
   //   next_page_id = header_page->root_page_id_;
   // }
-  ReadPageGuard next_guard = bpm_->FetchPageRead(next_page_id);
-  const auto *internal_page = next_guard.As<InternalPage>();
-#ifdef MYDEBUG
-  std::stringstream ss;
-  ss << std::this_thread::get_id();
-  LOG_DEBUG("thread id: %s inserting Get root page id: %d", ss.str().c_str(), next_page_id);
-  // PrintTree(next_page_id, internal_page);
-#endif
-
-  while (!internal_page->IsLeafPage()) {
-    guard = std::move(next_guard);  // Release parent page guard immediately.
-    next_page_id = internal_page->GetValue(key, comparator_);
-    next_guard = bpm_->FetchPageRead(next_page_id);
-    internal_page = next_guard.As<InternalPage>();
-#ifdef MYDEBUG
-    if (!internal_page->IsLeafPage()) {
-      LOG_DEBUG("thread id: %s inserting Get next internal page id: %d", ss.str().c_str(), next_page_id);
-    } else {
-      LOG_DEBUG("thread id: %s inserting Get next leaf page id: %d", ss.str().c_str(), next_page_id);
-    }
-    if (next_page_id == 0) {
-      exit(-1);
-    }
-// PrintTree(next_page_id, internal_page);
-#endif
+  int distance_to_leaf = header_page->tree_depth_;
+  while (--distance_to_leaf > 0) {
+    guard = bpm_->FetchPageRead(next_page_id);
+    next_page_id = guard.As<InternalPage>()->GetValue(key, comparator_);
   }
-  next_guard.Drop();  // Release the read latch to get the write latch, during which the parent latch can't be released.
   WritePageGuard leaf_guard = bpm_->FetchPageWrite(next_page_id);
-  guard.Drop();  // After getting the write latch, release the parent latch.
-  auto *leaf_page = leaf_guard.AsMut<LeafPage>();
-  if (leaf_page->HasValue(key, comparator_)) {
+  guard.Drop();
+  const auto *const_leaf_page = leaf_guard.As<LeafPage>();
+  if (const_leaf_page->HasValue(key, comparator_)) {
     return false;
   }
-#ifdef MYDEBUG
-  LOG_DEBUG("thread id: %s Before Leaf Insert", ss.str().c_str());
-#endif
-  if (leaf_page->IsFull()) {
-    // Another Thread splitting, we should retry
-    leaf_guard.Drop();
-#ifdef MYDEBUG
-    LOG_DEBUG("thread id: %s Insert Retry", ss.str().c_str());
-#endif
-    return Insert(key, value, txn);
+  if (const_leaf_page->GetSize() + 1 < const_leaf_page->GetMaxSize()) {
+    auto *leaf_page = leaf_guard.AsMut<LeafPage>();
+    leaf_page->Insert(key, value, comparator_);
+    return true;
   }
+  // Split the pages.
+  leaf_guard.Drop();
+  return SplitInsert(key, value, txn);
+}
+
+INDEX_TEMPLATE_ARGUMENTS
+auto BPLUSTREE_TYPE::SplitInsert(const KeyType &key, const ValueType &value, Transaction *txn) -> bool {
+  std::deque<WritePageGuard> write_set{};
+  write_set.emplace_front(bpm_->FetchPageWrite(header_page_id_));
+  const auto root_page_id = write_set.front().As<BPlusTreeHeaderPage>()->root_page_id_;
+  write_set.emplace_front(bpm_->FetchPageWrite(root_page_id));
+  const auto *const_internal_page = write_set.front().As<InternalPage>();
+  while (!const_internal_page->IsLeafPage()) {
+    if (!const_internal_page->IsFull()) {
+      write_set.resize(1);
+    }
+    const page_id_t next_page_id = const_internal_page->GetValue(key, comparator_);
+    write_set.emplace_front(bpm_->FetchPageWrite(next_page_id));
+    const_internal_page = write_set.front().As<InternalPage>();
+  }
+  const auto *const_leaf_page = write_set.front().As<LeafPage>();
+  if (const_leaf_page->HasValue(key, comparator_)) {
+    return false;
+  }
+  auto *leaf_page = write_set.front().AsMut<LeafPage>();
   leaf_page->Insert(key, value, comparator_);
-#ifdef MYDEBUG
-  LOG_DEBUG("thread id: %s Insert Over", ss.str().c_str());
-#endif
-  if (leaf_page->IsFull()) {
-    // Split the pages.
-    leaf_guard.Drop();
-#ifdef MYDEBUG
-    LOG_DEBUG("thread id: %s Split Start", ss.str().c_str());
-#endif
-    Split(key, value, txn);
+  if (!leaf_page->IsFull()) {
+    return true;
+  }
+  SplitContext ctx{{}, {}, root_page_id, &write_set};
+  while (!write_set.empty()) {
+    WritePageGuard &write_guard = write_set.front();
+    if (write_guard.PageId() == header_page_id_) {
+      SplitHeader(write_guard.AsMut<BPlusTreeHeaderPage>(), &ctx);
+    } else if (write_guard.As<BPlusTreePage>()->IsLeafPage()) {
+      SplitLeaf(write_guard.AsMut<LeafPage>(), &ctx);
+    } else {
+      SplitInternal(write_guard.AsMut<InternalPage>(), &ctx);
+    }
+    if (!write_set.empty()) {
+      write_set.pop_front();
+    }
   }
   return true;
 }
 
 INDEX_TEMPLATE_ARGUMENTS
-auto BPLUSTREE_TYPE::Split(const KeyType &key, const ValueType &value, Transaction *txn) -> void {
-  std::deque<WritePageGuard> write_set{};
-  write_set.emplace_back(bpm_->FetchPageWrite(header_page_id_));
-  const auto *const_header_page = write_set.back().As<BPlusTreeHeaderPage>();
-  write_set.emplace_back(bpm_->FetchPageWrite(const_header_page->root_page_id_));
-  const auto *const_internal_page = write_set.back().As<InternalPage>();
-#ifdef MYDEBUG
-  std::stringstream ss;
-  ss << std::this_thread::get_id();
-  LOG_DEBUG("thread id: %s Split Down A page id %d", ss.str().c_str(), const_header_page->root_page_id_);
-#endif
-  while (!const_internal_page->IsLeafPage()) {
-    if (!const_internal_page->IsFull()) {
-      while (write_set.size() > 1) {
-        write_set.pop_front();
-      }
-    }
-    page_id_t child_page_id = const_internal_page->GetValue(key, comparator_);
-    write_set.emplace_back(bpm_->FetchPageWrite(child_page_id));
-#ifdef MYDEBUG
-    LOG_DEBUG("thread id: %s Split Down B page id: %d", ss.str().c_str(), child_page_id);
-    if (child_page_id == 0) {
-      exit(-1);
-    }
-#endif
-    const_internal_page = write_set.back().As<InternalPage>();
-  }
-  const auto *const_leaf_page = write_set.back().As<LeafPage>();
-  if (!const_leaf_page->IsFull()) {
-    write_set.clear();
-    return;
-  }
-
-  SplitContext ctx{};
-  while (!write_set.empty()) {
-    WritePageGuard &write_guard = write_set.back();
-    if (write_guard.PageId() == header_page_id_) {
-#ifdef MYDEBUG
-      LOG_DEBUG("thread id: %s Split Get header page id: %d", ss.str().c_str(), write_guard.PageId());
-#endif
-      SplitHeader(write_guard.AsMut<BPlusTreeHeaderPage>(), &ctx);
-    } else if (write_guard.As<BPlusTreePage>()->IsLeafPage()) {
-#ifdef MYDEBUG
-      LOG_DEBUG("thread id: %s Split Get leaf page id: %d", ss.str().c_str(), write_guard.PageId());
-#endif
-      SplitLeaf(write_guard.AsMut<LeafPage>(), &ctx);
-    } else {
-#ifdef MYDEBUG
-      LOG_DEBUG("thread id: %s Split Get internal page id: %d", ss.str().c_str(), write_guard.PageId());
-#endif
-      SplitInternal(write_guard.AsMut<InternalPage>(), &ctx);
-// PrintTree(write_guard.PageId(), write_guard.As<InternalPage>());
-// PrintTree(ctx.new_page_id_, bpm_->FetchPageRead(ctx.new_page_id_).template As<InternalPage>());
-#ifdef MYDEBUG
-      auto left_page = write_guard.As<InternalPage>();
-      auto lid = write_guard.PageId();
-      auto gg = bpm_->FetchPageRead(ctx.new_page_id_);
-      auto right_page = gg.template As<InternalPage>();
-      auto rid = ctx.new_page_id_;
-      void(lid + rid);
-      if (!right_page->IsLeafPage()) {
-        bool is0 = false;
-        for (int i = 0; i < left_page->GetSize(); i++) {
-          if (left_page->ValueAt(i) == 0) {
-            is0 = true;
-            break;
-          }
-        }
-        if (is0) {
-          std::string kstr = "[";
-          bool first = true;
-
-          // first key of internal page is always invalid
-          for (int i = 0; i < left_page->GetSize(); i++) {
-            KeyType key = left_page->KeyAt(i);
-            if (first) {
-              first = false;
-            } else {
-              kstr.append(",");
-            }
-
-            kstr.append("(" + std::to_string(key.ToString()) + " " + std::to_string(left_page->ValueAt(i)) + ")");
-          }
-          kstr.append("]");
-          LOG_DEBUG("thread id: %s invalid left page: %s", ss.str().c_str(), kstr.c_str());
-          exit(-1);
-        }
-        is0 = false;
-        for (int i = 0; i < right_page->GetSize(); i++) {
-          if (right_page->ValueAt(i) == 0) {
-            is0 = true;
-            break;
-          }
-        }
-        if (is0) {
-          std::string kstr = "[";
-          bool first = true;
-
-          // first key of internal page is always invalid
-          for (int i = 0; i < right_page->GetSize(); i++) {
-            KeyType key = right_page->KeyAt(i);
-            if (first) {
-              first = false;
-            } else {
-              kstr.append(",");
-            }
-
-            kstr.append("(" + std::to_string(key.ToString()) + " " + std::to_string(left_page->ValueAt(i)) + ")");
-          }
-          kstr.append("]");
-          LOG_DEBUG("thread id: %s invalid right page: %s", ss.str().c_str(), kstr.c_str());
-          exit(-1);
-        }
-      }
-#endif
-    }
-#ifdef MYDEBUG
-    LOG_DEBUG("thread id: %s Current Split Turn Over", ss.str().c_str());
-#endif
-    write_set.pop_back();
-  }
-#ifdef MYDEBUG
-  LOG_DEBUG("thread id: %s Split Over", ss.str().c_str());
-#endif
-}
-
-INDEX_TEMPLATE_ARGUMENTS
-auto BPLUSTREE_TYPE::SplitHeader(BPlusTreeHeaderPage *header_page, SplitContext *ctx) -> void {
-  page_id_t old_child_page_id = header_page->root_page_id_;
+auto BPLUSTREE_TYPE::SplitHeader(BPlusTree::BPlusTreeHeaderPage *header_page, SplitContext *ctx) -> void {
+  const page_id_t left_child = header_page->root_page_id_;
+  const page_id_t right_child = ctx->new_page_id_;
+  const KeyType &key = ctx->new_key_;
   page_id_t new_root_page_id;
-  const auto &[new_key, new_child_page_id] = *ctx;
+
   BasicPageGuard internal_guard = bpm_->NewPageGuarded(&new_root_page_id);
   auto *internal_page = internal_guard.AsMut<InternalPage>();
   internal_page->Init(internal_max_size_);
-  internal_page->SetValueAt(0, old_child_page_id);
-  internal_page->SetKeyValueAt(1, new_key, new_child_page_id);
+  internal_page->SetValueAt(0, left_child);
+  internal_page->SetKeyValueAt(1, key, right_child);
   header_page->root_page_id_ = new_root_page_id;
+  ++header_page->tree_depth_;
 }
 
 INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::SplitInternal(InternalPage *internal_page, SplitContext *ctx) -> void {
-  const auto [new_child_key, new_child_page_id] = *ctx;
+  const KeyType &key = ctx->new_key_;
+  const page_id_t child = ctx->new_page_id_;
   if (!internal_page->IsFull()) {
-    internal_page->Insert(new_child_key, new_child_page_id, comparator_);
+    internal_page->Insert(key, child, comparator_);
     return;
   }
-  auto &[new_key, new_page_id] = *ctx;
+  if (!ctx->IsFrontPageRoot()) {
+    auto *parent_page = ctx->GetFrontPageParent().template AsMut<InternalPage>();
+    int index = parent_page->UpperBound(internal_page->KeyAt(0), comparator_) - 1;
+    WritePageGuard left_sib_guard;
+    WritePageGuard right_sib_guard;
+    const InternalPage *const_left_page = nullptr;  // using const_left_sib_page can't pass clang-tidy, ****
+    const InternalPage *const_right_sib_page = nullptr;
+    if (index < parent_page->GetSize() - 1) {
+      right_sib_guard = bpm_->FetchPageWrite(parent_page->ValueAt(index + 1));
+      const_right_sib_page = right_sib_guard.As<InternalPage>();
+    }
+    if (index > 0) {
+      left_sib_guard = bpm_->FetchPageWrite(parent_page->ValueAt(index - 1));
+      const_left_page = left_sib_guard.As<InternalPage>();
+    }
+    if (CanRedistribute(const_left_page, internal_page)) {
+      ShiftRightToLeft(left_sib_guard.AsMut<InternalPage>(), internal_page);
+      if (comparator_(key, internal_page->KeyAt(0)) < 0) {
+        left_sib_guard.AsMut<InternalPage>()->Insert(key, child, comparator_);
+      } else {
+        internal_page->InsertFromZero(key, child, comparator_);
+      }
+      parent_page->SetKeyAt(index, internal_page->KeyAt(0));
+      ctx->Finish();
+      return;
+    }
+    if (CanRedistribute(internal_page, const_right_sib_page)) {
+      ShiftLeftToRight(internal_page, right_sib_guard.AsMut<InternalPage>());
+      if (comparator_(key, right_sib_guard.AsMut<InternalPage>()->KeyAt(0)) < 0) {
+        internal_page->Insert(key, child, comparator_);
+      } else {
+        right_sib_guard.AsMut<InternalPage>()->InsertFromZero(key, child, comparator_);
+      }
+      parent_page->SetKeyAt(index + 1, const_right_sib_page->KeyAt(0));
+      ctx->Finish();
+      return;
+    }
+  }
+  page_id_t new_page_id;
   BasicPageGuard new_internal_guard = bpm_->NewPageGuarded(&new_page_id);
   auto *new_internal_page = new_internal_guard.AsMut<InternalPage>();
   new_internal_page->Init(internal_max_size_);
 
   int mid_index = internal_page->GetMinSize();
-  int insert_pos = internal_page->UpperBound(new_child_key, comparator_);
+  int insert_pos = internal_page->UpperBound(key, comparator_);
 
   if (insert_pos < mid_index) {
-    internal_page->MoveRange(new_internal_page, mid_index - 1, internal_page->GetSize(), 0);
-    internal_page->Insert(new_child_key, new_child_page_id, comparator_);
-  } else if (insert_pos == mid_index) {
-    internal_page->MoveRange(new_internal_page, mid_index, internal_page->GetSize(), 1);
-    new_internal_page->SetKeyValueAt(0, new_child_key, new_child_page_id);
+    internal_page->Range(mid_index - 1, -1) >> new_internal_page;
+    internal_page->Insert(key, child, comparator_);
   } else {
-    internal_page->MoveRange(new_internal_page, mid_index, internal_page->GetSize(), 0);
-    new_internal_page->Insert(new_child_key, new_child_page_id, comparator_);
+    internal_page->Range(mid_index, -1) >> new_internal_page;
+    new_internal_page->InsertFromZero(key, child, comparator_);
   }
-  new_key = new_internal_page->KeyAt(0);
+  ctx->new_key_ = new_internal_page->KeyAt(0);
+  ctx->new_page_id_ = new_page_id;
 }
 
 INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::SplitLeaf(LeafPage *leaf_page, SplitContext *ctx) -> void {
-  auto &[new_key, new_page_id] = *ctx;
-
-  if (!leaf_page->IsFull()) {
-    return;
+  if (!ctx->IsFrontPageRoot()) {
+    auto *parent_page = ctx->GetFrontPageParent().template AsMut<InternalPage>();
+    int index = parent_page->UpperBound(leaf_page->KeyAt(0), comparator_) - 1;
+    WritePageGuard left_sib_guard;
+    WritePageGuard right_sib_guard;
+    const LeafPage *const_left_page = nullptr;  // using const_left_sib_page can't pass clang-tidy, ****
+    const LeafPage *const_right_sib_page = nullptr;
+    if (index < parent_page->GetSize() - 1) {
+      right_sib_guard = bpm_->FetchPageWrite(parent_page->ValueAt(index + 1));
+      const_right_sib_page = right_sib_guard.As<LeafPage>();
+    }
+    if (index > 0) {
+      left_sib_guard = bpm_->FetchPageWrite(parent_page->ValueAt(index - 1));
+      const_left_page = left_sib_guard.As<LeafPage>();
+    }
+    if (CanRedistribute(const_left_page, leaf_page)) {
+      ShiftRightToLeft(left_sib_guard.AsMut<LeafPage>(), leaf_page);
+      parent_page->SetKeyAt(index, leaf_page->KeyAt(0));
+      ctx->Finish();
+      return;
+    }
+    if (CanRedistribute(leaf_page, const_right_sib_page)) {
+      ShiftLeftToRight(leaf_page, right_sib_guard.AsMut<LeafPage>());
+      parent_page->SetKeyAt(index + 1, const_right_sib_page->KeyAt(0));
+      ctx->Finish();
+      return;
+    }
   }
+  page_id_t new_page_id;
   BasicPageGuard new_leaf_guard = bpm_->NewPageGuarded(&new_page_id);
   auto *new_leaf_page = new_leaf_guard.AsMut<LeafPage>();
   new_leaf_page->Init(leaf_max_size_);
 
-  leaf_page->MoveRange(new_leaf_page, leaf_page->GetMinSize(), leaf_page->GetMaxSize(), 0);
+  leaf_page->Range(leaf_page->GetMinSize(), -1) >> new_leaf_page;
   new_leaf_page->SetNextPageId(leaf_page->GetNextPageId());
   leaf_page->SetNextPageId(new_page_id);
-  new_key = new_leaf_page->KeyAt(0);
+  ctx->new_key_ = new_leaf_page->KeyAt(0);
+  ctx->new_page_id_ = new_page_id;
 }
 
 /*****************************************************************************
@@ -347,177 +283,213 @@ auto BPLUSTREE_TYPE::SplitLeaf(LeafPage *leaf_page, SplitContext *ctx) -> void {
  */
 INDEX_TEMPLATE_ARGUMENTS
 void BPLUSTREE_TYPE::Remove(const KeyType &key, Transaction *txn) {
-  // Declaration of context instance.
-  // Context ctx;
   ReadPageGuard guard = bpm_->FetchPageRead(header_page_id_);
   const auto *header_page = guard.As<BPlusTreeHeaderPage>();
   page_id_t root_page_id = header_page->root_page_id_;
-  page_id_t next_page_id = root_page_id;
-  ReadPageGuard next_guard = bpm_->FetchPageRead(next_page_id);
-  const auto *internal_page = next_guard.As<InternalPage>();
-  if (internal_page->GetSize() == 0) {
-    return;
+  page_id_t next_page_id = header_page->root_page_id_;
+  int distance_to_leaf = header_page->tree_depth_;
+  while (--distance_to_leaf > 0) {
+    guard = bpm_->FetchPageRead(next_page_id);
+    next_page_id = guard.As<InternalPage>()->GetValue(key, comparator_);
   }
-  while (!internal_page->IsLeafPage()) {
-    guard = std::move(next_guard);
-    next_page_id = internal_page->GetValue(key, comparator_);
-    next_guard = bpm_->FetchPageRead(next_page_id);
-    internal_page = next_guard.As<InternalPage>();
-  }
-  next_guard.Drop();
   WritePageGuard leaf_guard = bpm_->FetchPageWrite(next_page_id);
   guard.Drop();
-  auto *leaf_page = leaf_guard.AsMut<LeafPage>();
-  if (!leaf_page->HasValue(key, comparator_)) {
+  const auto *const_leaf_page = leaf_guard.As<LeafPage>();
+  if (!const_leaf_page->HasValue(key, comparator_)) {
     return;
   }
-  if (leaf_guard.PageId() != root_page_id && leaf_page->UnderHalfFull()) {
-    // Another Thread Merging or Redistributing
-    leaf_guard.Drop();
-    return Remove(key, txn);
+  if (const_leaf_page->OverHalfFull() || leaf_guard.PageId() == root_page_id) {
+    auto *leaf_page = leaf_guard.AsMut<LeafPage>();
+    leaf_page->Remove(key, comparator_);
+    return;
   }
-  leaf_page->Remove(key, comparator_);
-  if (leaf_guard.PageId() != root_page_id && leaf_page->UnderHalfFull()) {
-    // Merge or redistribute.
-    leaf_guard.Drop();
-    Merge(key, txn);
-  }
+  // Merge or redistribute.
+  leaf_guard.Drop();
+  MergeRemove(key, txn);
 }
 
 INDEX_TEMPLATE_ARGUMENTS
-auto BPLUSTREE_TYPE::Merge(const KeyType &key, Transaction *txn) -> void {
+auto BPLUSTREE_TYPE::MergeRemove(const KeyType &key, Transaction *txn) -> void {
   std::deque<WritePageGuard> write_set{};
-  write_set.emplace_back(bpm_->FetchPageWrite(header_page_id_));
-  const auto *const_header_page = write_set.back().As<BPlusTreeHeaderPage>();
-  write_set.emplace_back(bpm_->FetchPageWrite(const_header_page->root_page_id_));
-  const auto *const_internal_page = write_set.back().As<InternalPage>();
+  write_set.emplace_front(bpm_->FetchPageWrite(header_page_id_));
+  const auto root_page_id = write_set.front().As<BPlusTreeHeaderPage>()->root_page_id_;
+  write_set.emplace_front(bpm_->FetchPageWrite(root_page_id));
+  const auto *const_internal_page = write_set.front().As<InternalPage>();
   while (!const_internal_page->IsLeafPage()) {
     if (const_internal_page->OverHalfFull()) {
-      while (write_set.size() > 1) {
-        write_set.pop_front();
-      }
+      write_set.resize(1);
     }
-    page_id_t child_page_id = const_internal_page->GetValue(key, comparator_);
-    write_set.emplace_back(bpm_->FetchPageWrite(child_page_id));
-    const_internal_page = write_set.back().As<InternalPage>();
+    auto next_page_id = const_internal_page->GetValue(key, comparator_);
+    write_set.emplace_front(bpm_->FetchPageWrite(next_page_id));
+    const_internal_page = write_set.front().As<InternalPage>();
   }
-  const auto *const_leaf_page = write_set.back().As<LeafPage>();
-  if (!const_leaf_page->UnderHalfFull()) {
-    write_set.clear();
+  const auto *const_leaf_page = write_set.front().As<LeafPage>();
+  if (!const_leaf_page->HasValue(key, comparator_)) {
+    return;
+  }
+  auto *leaf_page = write_set.front().AsMut<LeafPage>();
+  leaf_page->Remove(key, comparator_);
+  if (!const_leaf_page->UnderHalfFull() || write_set.front().PageId() == root_page_id) {
     return;
   }
 
-  MergeContext ctx{{}, {}, {}, MergeContext::Remove};
-  while (!write_set.empty() && ctx.op_type_ != MergeContext::Finish) {
-    WritePageGuard &write_guard = write_set.back();
-    page_id_t deleted_page_id = INVALID_PAGE_ID;
-    if (write_guard.PageId() == header_page_id_) {
-      write_guard.AsMut<BPlusTreeHeaderPage>()->root_page_id_ = ctx.page_id_;
-    } else if (ctx.op_type_ == MergeContext::UpdateKey || write_set.size() <= 1 ||
-               (write_set.size() == 2 && write_set.front().PageId() == header_page_id_)) {
-      MergeInternal(write_guard.AsMut<InternalPage>(), nullptr, &ctx);
+  MergeContext ctx{{}, root_page_id, &write_set};
+  while (!write_set.empty()) {
+    WritePageGuard &write_guard = write_set.front();
+    if (write_guard.As<BPlusTreePage>()->IsLeafPage()) {
+      MergeLeaf(write_guard.AsMut<LeafPage>(), &ctx);
     } else {
-      bool is_left_sib;
-      WritePageGuard &parent_guard = *-- --write_set.end();
-      const auto *parent_page = parent_guard.As<InternalPage>();
-      WritePageGuard sib_guard = GetSibling(key, parent_page, &is_left_sib);
-      WritePageGuard &left_guard = is_left_sib ? sib_guard : write_guard;
-      WritePageGuard &right_guard = is_left_sib ? write_guard : sib_guard;
-      ctx.parent_key_ = is_left_sib ? parent_page->KeyAt(parent_page->UpperBound(key, comparator_) - 1)
-                                    : parent_page->KeyAt(parent_page->UpperBound(key, comparator_));
-      if (write_guard.As<BPlusTreePage>()->IsLeafPage()) {
-        MergeLeaf(left_guard.AsMut<LeafPage>(), right_guard.AsMut<LeafPage>(), &ctx);
-      } else {
-        MergeInternal(left_guard.AsMut<InternalPage>(), right_guard.AsMut<InternalPage>(), &ctx);
-      }
-      if (ctx.op_type_ == MergeContext::Remove) {
-        deleted_page_id = is_left_sib ? write_guard.PageId() : sib_guard.PageId();
-      }
+      MergeInternal(write_guard.AsMut<InternalPage>(), &ctx);
     }
-    write_set.pop_back();
-    if (deleted_page_id != INVALID_PAGE_ID) {
-      bpm_->DeletePage(deleted_page_id);
+    if (!write_set.empty()) {
+      write_set.pop_front();
     }
   }
 }
 
 INDEX_TEMPLATE_ARGUMENTS
-auto BPLUSTREE_TYPE::MergeInternal(InternalPage *left_page, InternalPage *right_page, MergeContext *ctx) -> void {
-  if (ctx->op_type_ == MergeContext::UpdateKey) {
-    left_page->SetKeyAt(left_page->UpperBound(ctx->key_, comparator_) - 1, ctx->key_);
-    ctx->op_type_ = MergeContext::Finish;
+auto BPLUSTREE_TYPE::MergeInternal(InternalPage *internal_page, MergeContext *ctx) -> void {
+  internal_page->Remove(ctx->delete_key_, comparator_);
+  if (!internal_page->UnderHalfFull()) {
     return;
   }
-  if (right_page == nullptr) {
-    left_page->Remove(ctx->key_, comparator_);
-    if (left_page->GetSize() == 1) {
-      ctx->page_id_ = left_page->ValueAt(0);
-      ctx->op_type_ = MergeContext::UpdateRoot;
+  if (ctx->IsFrontPageRoot()) {
+    if (internal_page->GetSize() > 1) {
+      ctx->Finish();
+      return;
     }
+    auto *header_page = ctx->GetFrontPageParent().template AsMut<BPlusTreeHeaderPage>();
+    header_page->root_page_id_ = internal_page->ValueAt(0);
+    --header_page->tree_depth_;
+    ctx->Finish();
     return;
   }
-  if (left_page->OverHalfFull()) {
-    right_page->Insert(left_page->LastKey(), left_page->LastValue(), comparator_);
-    left_page->RemoveLast();
-    ctx->op_type_ = MergeContext::UpdateKey;
-    ctx->key_ = right_page->KeyAt(0);
+  auto *parent_page = ctx->GetFrontPageParent().template AsMut<InternalPage>();
+  int index = parent_page->UpperBound(internal_page->KeyAt(0), comparator_) - 1;
+  WritePageGuard left_sib_guard;
+  WritePageGuard right_sib_guard;
+  const InternalPage *const_left_page = nullptr;  // using const_left_sib_page can't pass clang-tidy, ****
+  const InternalPage *const_right_sib_page = nullptr;
+  if (index < parent_page->GetSize() - 1) {
+    right_sib_guard = bpm_->FetchPageWrite(parent_page->ValueAt(index + 1));
+    const_right_sib_page = right_sib_guard.As<InternalPage>();
+  }
+  if (index > 0) {
+    left_sib_guard = bpm_->FetchPageWrite(parent_page->ValueAt(index - 1));
+    const_left_page = left_sib_guard.As<InternalPage>();
+  }
+  if (CanRedistribute(internal_page, const_right_sib_page)) {
+    ShiftRightToLeft(internal_page, right_sib_guard.AsMut<InternalPage>());
+    parent_page->SetKeyAt(index + 1, const_right_sib_page->KeyAt(0));
+    ctx->Finish();
     return;
   }
-  if (right_page->OverHalfFull()) {
-    left_page->SetKeyValueAt(left_page->GetSize(), ctx->parent_key_, right_page->ValueAt(0));
-    right_page->RemoveAt(0);
-    ctx->op_type_ = MergeContext::UpdateKey;
-    ctx->key_ = right_page->KeyAt(0);
+  if (CanRedistribute(const_left_page, internal_page)) {
+    ShiftLeftToRight(left_sib_guard.AsMut<InternalPage>(), internal_page);
+    parent_page->SetKeyAt(index, internal_page->KeyAt(0));
+    ctx->Finish();
     return;
   }
-  right_page->SetKeyAt(0, ctx->parent_key_);
-  right_page->MoveRange(left_page, 0, right_page->GetSize(), left_page->GetSize());
-  ctx->op_type_ = MergeContext::Remove;
-  ctx->key_ = ctx->parent_key_;
+  InternalPage *left_page;
+  InternalPage *right_page;
+  if (const_right_sib_page != nullptr) {
+    left_sib_guard.Drop();
+    right_sib_guard.SetDead();
+    left_page = internal_page;
+    right_page = right_sib_guard.AsMut<InternalPage>();
+  } else {
+    right_sib_guard.Drop();
+    ctx->GetFrontPage().SetDead();  //!!!
+    left_page = left_sib_guard.AsMut<InternalPage>();
+    right_page = internal_page;
+  }
+  ctx->delete_key_ = right_page->KeyAt(0);
+  left_page << right_page->Range(0, -1);
 }
 
 INDEX_TEMPLATE_ARGUMENTS
-auto BPLUSTREE_TYPE::MergeLeaf(LeafPage *left_page, LeafPage *right_page, MergeContext *ctx) -> void {
-  if (left_page->OverHalfFull()) {
-    right_page->Insert(left_page->LastKey(), left_page->LastValue(), comparator_);
-    left_page->RemoveLast();
-    ctx->op_type_ = MergeContext::UpdateKey;
-    ctx->key_ = right_page->KeyAt(0);
+auto BPLUSTREE_TYPE::MergeLeaf(LeafPage *leaf_page, MergeContext *ctx) -> void {
+  auto *parent_page = ctx->GetFrontPageParent().template AsMut<InternalPage>();
+  int index = parent_page->UpperBound(leaf_page->KeyAt(0), comparator_) - 1;
+  WritePageGuard left_sib_guard;
+  WritePageGuard right_sib_guard;
+  const LeafPage *const_left_page = nullptr;  // using const_left_sib_page can't pass clang-tidy, ****
+  const LeafPage *const_right_sib_page = nullptr;
+  if (index < parent_page->GetSize() - 1) {
+    right_sib_guard = bpm_->FetchPageWrite(parent_page->ValueAt(index + 1));
+    const_right_sib_page = right_sib_guard.As<LeafPage>();
+  }
+  if (index > 0) {
+    left_sib_guard = bpm_->FetchPageWrite(parent_page->ValueAt(index - 1));
+    const_left_page = left_sib_guard.As<LeafPage>();
+  }
+  if (CanRedistribute(leaf_page, const_right_sib_page)) {
+    ShiftRightToLeft(leaf_page, right_sib_guard.AsMut<LeafPage>());
+    parent_page->SetKeyAt(index + 1, const_right_sib_page->KeyAt(0));
+    ctx->Finish();
     return;
   }
-  if (right_page->OverHalfFull()) {
-    left_page->SetKeyValueAt(left_page->GetSize(), right_page->KeyAt(0), right_page->ValueAt(0));
-    right_page->RemoveAt(0);
-    ctx->op_type_ = MergeContext::UpdateKey;
-    ctx->key_ = right_page->KeyAt(0);
+  if (CanRedistribute(const_left_page, leaf_page)) {
+    ShiftLeftToRight(left_sib_guard.AsMut<LeafPage>(), leaf_page);
+    parent_page->SetKeyAt(index, leaf_page->KeyAt(0));
+    ctx->Finish();
     return;
   }
-  right_page->MoveRange(left_page, 0, right_page->GetSize(), left_page->GetSize());
+  LeafPage *left_page;
+  LeafPage *right_page;
+  if (const_right_sib_page != nullptr) {
+    left_sib_guard.Drop();
+    right_sib_guard.SetDead();
+    left_page = leaf_page;
+    right_page = right_sib_guard.AsMut<LeafPage>();
+  } else {
+    right_sib_guard.Drop();
+    ctx->GetFrontPage().SetDead();  //!!!
+    left_page = left_sib_guard.AsMut<LeafPage>();
+    right_page = leaf_page;
+  }
+  ctx->delete_key_ = right_page->KeyAt(0);
+  left_page << right_page->Range(0, -1);
   left_page->SetNextPageId(right_page->GetNextPageId());
-  ctx->op_type_ = MergeContext::Remove;
-  ctx->key_ = right_page->KeyAt(0);
 }
 
 INDEX_TEMPLATE_ARGUMENTS
-auto BPLUSTREE_TYPE::GetSibling(const KeyType &key, const InternalPage *parent_page, bool *is_left_sib)
-    -> WritePageGuard {
-  int index = parent_page->UpperBound(key, comparator_) - 1;
-  if (index == parent_page->GetSize() - 1) {
-    *is_left_sib = true;
-    return bpm_->FetchPageWrite(parent_page->ValueAt(index - 1));
-  }
-  if (index == 0) {
-    *is_left_sib = false;
-    return bpm_->FetchPageWrite(parent_page->ValueAt(index + 1));
-  }
-  WritePageGuard left_sibling_guard = bpm_->FetchPageWrite(parent_page->ValueAt(index - 1));
-  WritePageGuard right_sibling_guard = bpm_->FetchPageWrite(parent_page->ValueAt(index + 1));
-  if (left_sibling_guard.As<BPlusTreePage>()->GetSize() > right_sibling_guard.As<BPlusTreePage>()->GetSize()) {
-    *is_left_sib = true;
-    return left_sibling_guard;
-  }
-  *is_left_sib = false;
-  return right_sibling_guard;
+auto BPLUSTREE_TYPE::CanRedistribute(const BPlusTreePage *left_page, const BPlusTreePage *right_page) -> bool {
+  return left_page != nullptr && right_page != nullptr &&
+         left_page->GetSize() + right_page->GetSize() >= left_page->GetMinSize() * 2 &&
+         left_page->GetSize() + right_page->GetSize() < left_page->GetMaxSize() * 2 * 95 / 100;
+}
+
+INDEX_TEMPLATE_ARGUMENTS
+auto BPLUSTREE_TYPE::ShiftLeftToRight(InternalPage *left_page, InternalPage *right_page) -> void {
+  int left_size = left_page->GetSize();
+  int right_size = right_page->GetSize();
+  int shift_size = (left_size + right_size) / 2 - right_size;
+  left_page->Range(left_size - shift_size, -1) >> right_page;
+}
+
+INDEX_TEMPLATE_ARGUMENTS
+auto BPLUSTREE_TYPE::ShiftRightToLeft(InternalPage *left_page, InternalPage *right_page) -> void {
+  int left_size = left_page->GetSize();
+  int right_size = right_page->GetSize();
+  int shift_size = (left_size + right_size) / 2 - left_size;
+  left_page << right_page->Range(0, shift_size);
+}
+
+INDEX_TEMPLATE_ARGUMENTS
+auto BPLUSTREE_TYPE::ShiftLeftToRight(LeafPage *left_page, LeafPage *right_page) -> void {
+  int left_size = left_page->GetSize();
+  int right_size = right_page->GetSize();
+  int shift_size = (left_size + right_size) / 2 - right_size;
+  left_page->Range(left_size - shift_size, -1) >> right_page;
+}
+
+INDEX_TEMPLATE_ARGUMENTS
+auto BPLUSTREE_TYPE::ShiftRightToLeft(LeafPage *left_page, LeafPage *right_page) -> void {
+  int left_size = left_page->GetSize();
+  int right_size = right_page->GetSize();
+  int shift_size = (left_size + right_size) / 2 - left_size;
+  left_page << right_page->Range(0, shift_size);
 }
 
 /*****************************************************************************
@@ -728,7 +700,7 @@ void BPLUSTREE_TYPE::ToGraph(page_id_t page_id, const BPlusTreePage *page, std::
     // Print Leaf node link if there is a next page
     if (leaf->GetNextPageId() != INVALID_PAGE_ID) {
       out << leaf_prefix << page_id << " -> " << leaf_prefix << leaf->GetNextPageId() << ";\n";
-      out << "{rank=same " << leaf_prefix << page_id << " " << leaf_prefix << leaf->GetNextPageId() << "};\n";
+      out << "{rank=same " << leaf_prefix << page_id << " " << leaf_prefix << leaf->GetNextPageId() << "}\n";
     }
   } else {
     auto *inner = reinterpret_cast<const InternalPage *>(page);

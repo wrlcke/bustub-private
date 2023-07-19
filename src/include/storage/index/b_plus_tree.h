@@ -62,16 +62,25 @@ class BPlusTreeSplitContext {
  public:
   KeyType new_key_;
   page_id_t new_page_id_;
+  const page_id_t root_page_id_;
+  std::deque<WritePageGuard> *write_set_;
+
+  inline auto IsFrontPageRoot() -> bool { return write_set_->front().PageId() == root_page_id_; }
+  inline auto GetFrontPageParent() -> WritePageGuard & { return *++write_set_->begin(); }
+  inline auto Finish() -> void { write_set_->clear(); }
 };
 
 template <typename KeyType>
 class BPlusTreeMergeContext {
  public:
-  enum OperationType { Remove = 0, UpdateKey, UpdateRoot, Finish };
-  KeyType key_;
-  page_id_t page_id_;
-  KeyType parent_key_;
-  OperationType op_type_;
+  KeyType delete_key_;
+  const page_id_t root_page_id_;
+  std::deque<WritePageGuard> *write_set_;
+
+  inline auto IsFrontPageRoot() -> bool { return write_set_->front().PageId() == root_page_id_; }
+  inline auto GetFrontPageParent() -> WritePageGuard & { return *++write_set_->begin(); }
+  inline auto GetFrontPage() -> WritePageGuard & { return write_set_->front(); }
+  inline auto Finish() -> void { write_set_->clear(); }
 };
 
 #define BPLUSTREE_TYPE BPlusTree<KeyType, ValueType, KeyComparator>
@@ -83,6 +92,7 @@ class BPlusTree {
   using LeafPage = BPlusTreeLeafPage<KeyType, ValueType, KeyComparator>;
   using SplitContext = BPlusTreeSplitContext<KeyType>;
   using MergeContext = BPlusTreeMergeContext<KeyType>;
+  class BPlusTreeHeaderPage;
 
  public:
   explicit BPlusTree(std::string name, page_id_t header_page_id, BufferPoolManager *buffer_pool_manager,
@@ -170,7 +180,7 @@ class BPlusTree {
    * 2.4 For leaf pages, they will always be at the back of the write set (the beginning of the reverse traversal).
    *  Create a new leaf page, split it, set the new page, and fill the context.
    */
-  auto Split(const KeyType &key, const ValueType &value, Transaction *txn) -> void;
+  auto SplitInsert(const KeyType &key, const ValueType &value, Transaction *txn) -> bool;
   auto SplitHeader(BPlusTreeHeaderPage *page, SplitContext *ctx) -> void;
   auto SplitInternal(InternalPage *page, SplitContext *ctx) -> void;
   auto SplitLeaf(LeafPage *page, SplitContext *ctx) -> void;
@@ -202,10 +212,14 @@ class BPlusTree {
    *  Otherwise, we pass the only element, which is a page ID, as the new root page ID to the context.
    * 2.6 For header page which can only be in the front of the write set, update the root page id from the context.
    */
-  auto Merge(const KeyType &key, Transaction *txn) -> void;
-  auto MergeInternal(InternalPage *left_page, InternalPage *right_page, MergeContext *ctx) -> void;
-  auto MergeLeaf(LeafPage *left_page, LeafPage *right_page, MergeContext *ctx) -> void;
-  auto GetSibling(const KeyType &key, const InternalPage *parent_page, bool *is_left_sib) -> WritePageGuard;
+  auto MergeRemove(const KeyType &key, Transaction *txn) -> void;
+  auto MergeInternal(InternalPage *internal_page, MergeContext *ctx) -> void;
+  auto MergeLeaf(LeafPage *leaf_page, MergeContext *ctx) -> void;
+  auto CanRedistribute(const BPlusTreePage *left_page, const BPlusTreePage *right_page) -> bool;
+  auto ShiftLeftToRight(InternalPage *left_page, InternalPage *right_page) -> void;
+  auto ShiftRightToLeft(InternalPage *left_page, InternalPage *right_page) -> void;
+  auto ShiftLeftToRight(LeafPage *left_page, LeafPage *right_page) -> void;
+  auto ShiftRightToLeft(LeafPage *left_page, LeafPage *right_page) -> void;
 
   // member variable
   std::string index_name_;
@@ -215,6 +229,17 @@ class BPlusTree {
   int leaf_max_size_;
   int internal_max_size_;
   page_id_t header_page_id_;
+
+  class BPlusTreeHeaderPage {
+   public:
+    // Delete all constructor / destructor to ensure memory safety
+    BPlusTreeHeaderPage() = delete;
+    BPlusTreeHeaderPage(const BPlusTreeHeaderPage &other) = delete;
+
+    page_id_t root_page_id_;
+    int32_t tree_depth_;
+  };
+  inline auto IsLeafDepth(int depth, int tree_depth) -> bool { return depth == tree_depth; }
 };
 
 /**
