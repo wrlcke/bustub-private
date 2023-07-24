@@ -12,12 +12,10 @@
 
 #pragma once
 
-#include <deque>
 #include <list>
 #include <memory>
 #include <mutex>  // NOLINT
 #include <unordered_map>
-#include <vector>
 
 #include "buffer/lru_k_replacer.h"
 #include "common/config.h"
@@ -27,53 +25,6 @@
 #include "storage/page/page_guard.h"
 
 namespace bustub {
-
-class DiskScheduler {
- public:
-  explicit DiskScheduler(DiskManager *disk_manager, size_t pool_size = 6) : disk_manager_(disk_manager) {
-    ThreadPoolInit(pool_size);
-  }
-  ~DiskScheduler() { ThreadPoolDestroy(); }
-
-  void SubmitRead(page_id_t page_id, char *page_data);
-  void SubmitWrite(page_id_t page_id, const char *page_data);
-  void ExecuteRead(page_id_t page_id);
-  void ExecuteWrite(page_id_t page_id);
-  void ExecuteReadAsync(page_id_t page_id);
-  void ExecuteWriteAsync(page_id_t page_id);
-  void CheckPageLoaded(page_id_t page_id);
-
- private:
-  struct DiskRequest {
-    page_id_t page_id_;
-    bool need_read_;
-    bool need_write_;
-    char *read_page_data_;
-    char *write_page_data_;
-    std::mutex request_latch_;
-  };
-  enum ExecuteType { Read, Write };
-  struct ExecutionTask {
-    DiskRequest *request_;
-    ExecuteType type_;
-  };
-
-  DiskManager *disk_manager_;
-  std::unordered_map<page_id_t, DiskRequest> disk_requests_;
-  std::shared_mutex schedule_latch_;
-  std::vector<std::thread> thread_pool_;
-  std::deque<ExecutionTask> task_queue_;
-  std::mutex thread_pool_latch_;
-  std::condition_variable thread_pool_cv_;
-  bool thread_pool_shutdown_;
-
-  void ExecuteRead(DiskRequest &request);
-  void ExecuteWrite(DiskRequest &request);
-  void ThreadPoolWorker();
-  void ThreadPoolInit(size_t pool_size);
-  void ThreadPoolSubmit(DiskRequest *request, ExecuteType type);
-  void ThreadPoolDestroy();
-};
 
 /**
  * BufferPoolManager reads disk pages to and from its internal buffer pool.
@@ -88,18 +39,35 @@ class BufferPoolManager {
    * @param log_manager the log manager (for testing only: nullptr = disable logging). Please ignore this for P1.
    */
   BufferPoolManager(size_t pool_size, DiskManager *disk_manager, size_t replacer_k = LRUK_REPLACER_K,
-                    LogManager *log_manager = nullptr);
+                    LogManager *log_manager = nullptr)
+      : pool_size_(pool_size), num_instances_(pool_size > 250 ? 16 : 1), next_instance_index_(0) {
+    instances_ = new BufferPoolManagerInstance *[num_instances_];
+    instances_[0] = new BufferPoolManagerInstance(pool_size / num_instances_ + pool_size % num_instances_,
+                                                  num_instances_, 0, disk_manager, replacer_k, log_manager);
+    for (size_t i = 1; i < num_instances_; i++) {
+      instances_[i] = new BufferPoolManagerInstance(pool_size / num_instances_, num_instances_, i, disk_manager,
+                                                    replacer_k, log_manager);
+    }
+    // for (size_t i = 0; i < num_instances_; ++i) {
+    //   instances_[i] = new BufferPoolManagerInstance(pool_size > 1250 ? 1 : pool_size, num_instances_, i,
+    //   disk_manager,
+    //                                                 replacer_k, log_manager);
+    //   // counter_[i] = 0;
+    // }
+  }
 
-  /**
-   * @brief Destroy an existing BufferPoolManager.
-   */
-  ~BufferPoolManager();
+  ~BufferPoolManager() {
+    // std::ofstream out("./metrics.txt");
+    for (size_t i = 0; i < num_instances_; i++) {
+      // out << "instance " << i << " counter: " << counter_[i] << std::endl;
+      delete instances_[i];
+    }
+    // out.close();
+    delete[] instances_;
+  }
 
   /** @brief Return the size (number of frames) of the buffer pool. */
   auto GetPoolSize() -> size_t { return pool_size_; }
-
-  /** @brief Return the pointer to all the pages in the buffer pool. */
-  auto GetPages() -> Page * { return pages_; }
 
   /**
    * TODO(P1): Add implementation
@@ -118,7 +86,18 @@ class BufferPoolManager {
    * @param[out] page_id id of created page
    * @return nullptr if no new pages could be created, otherwise pointer to new page
    */
-  auto NewPage(page_id_t *page_id) -> Page *;
+  auto NewPage(page_id_t *page_id) -> Page * {
+    Page *page = nullptr;
+    const size_t start_index = next_instance_index_++;
+    for (size_t i = 0; i < num_instances_; ++i) {
+      const size_t index = (start_index + i) % num_instances_;
+      page = instances_[index]->NewPage(page_id);
+      if (page != nullptr) {
+        break;
+      }
+    }
+    return page;
+  }
 
   /**
    * TODO(P1): Add implementation
@@ -151,7 +130,11 @@ class BufferPoolManager {
    * @param access_type type of access to the page, only needed for leaderboard tests.
    * @return nullptr if page_id cannot be fetched, otherwise pointer to the requested page
    */
-  auto FetchPage(page_id_t page_id, AccessType access_type = AccessType::Unknown) -> Page *;
+  auto FetchPage(page_id_t page_id, AccessType access_type = AccessType::Unknown) -> Page * {
+    // std::cout << page_id % num_instances_ << std::endl;
+    // counter_[page_id % num_instances_]++;
+    return instances_[page_id % num_instances_]->FetchPage(page_id, access_type);
+  }
 
   /**
    * TODO(P1): Add implementation
@@ -184,7 +167,9 @@ class BufferPoolManager {
    * @param access_type type of access to the page, only needed for leaderboard tests.
    * @return false if the page is not in the page table or its pin count is <= 0 before this call, true otherwise
    */
-  auto UnpinPage(page_id_t page_id, bool is_dirty, AccessType access_type = AccessType::Unknown) -> bool;
+  auto UnpinPage(page_id_t page_id, bool is_dirty, AccessType access_type = AccessType::Unknown) -> bool {
+    return instances_[page_id % num_instances_]->UnpinPage(page_id, is_dirty, access_type);
+  }
 
   /**
    * TODO(P1): Add implementation
@@ -197,14 +182,18 @@ class BufferPoolManager {
    * @param page_id id of page to be flushed, cannot be INVALID_PAGE_ID
    * @return false if the page could not be found in the page table, true otherwise
    */
-  auto FlushPage(page_id_t page_id) -> bool;
+  auto FlushPage(page_id_t page_id) -> bool { return instances_[page_id % num_instances_]->FlushPage(page_id); }
 
   /**
    * TODO(P1): Add implementation
    *
    * @brief Flush all the pages in the buffer pool to disk.
    */
-  void FlushAllPages();
+  void FlushAllPages() {
+    for (size_t i = 0; i < num_instances_; ++i) {
+      instances_[i]->FlushAllPages();
+    }
+  }
 
   /**
    * TODO(P1): Add implementation
@@ -219,45 +208,172 @@ class BufferPoolManager {
    * @param page_id id of page to be deleted
    * @return false if the page exists but could not be deleted, true if the page didn't exist or deletion succeeded
    */
-  auto DeletePage(page_id_t page_id) -> bool;
+  auto DeletePage(page_id_t page_id) -> bool { return instances_[page_id % num_instances_]->DeletePage(page_id); }
 
  private:
+  class BufferPoolManagerInstance;
   /** Number of pages in the buffer pool. */
   const size_t pool_size_;
+  /** Number of buffer pool manager instances*/
+  const size_t num_instances_;
   /** The next page id to be allocated  */
-  std::atomic<page_id_t> next_page_id_ = 0;
+  std::atomic<size_t> next_instance_index_;
+  /** Buffer pool manager instances*/
+  BufferPoolManagerInstance **instances_;
 
-  /** Array of buffer pool pages. */
-  Page *pages_;
-  /** Pointer to the disk manager. */
-  DiskManager *disk_manager_;
-  /** Pointer to the log manager. Please ignore this for P1. */
-  LogManager *log_manager_ __attribute__((__unused__));
-  /** Page table for keeping track of buffer pool pages. */
-  std::unordered_map<page_id_t, frame_id_t> page_table_;
-  /** Replacer to find unpinned pages for replacement. */
-  std::unique_ptr<LRUKReplacer> replacer_;
-  /** List of free frames that don't have any pages on them. */
-  std::list<frame_id_t> free_list_;
-  /** This latch protects shared data structures. We recommend updating this comment to describe what it protects. */
-  std::mutex latch_;
-  /** Disk scheduler */
-  DiskScheduler disk_scheduler_;
-
-  /**
-   * @brief Allocate a page on disk. Caller should acquire the latch before calling this function.
-   * @return the id of the allocated page
-   */
-  auto AllocatePage() -> page_id_t;
-
-  /**
-   * @brief Deallocate a page on disk. Caller should acquire the latch before calling this function.
-   * @param page_id id of the page to deallocate
-   */
-  void DeallocatePage(__attribute__((unused)) page_id_t page_id) {
-    // This is a no-nop right now without a more complex data structure to track deallocated pages
-  }
+  // std::atomic<int> counter_[70000];
 
   // TODO(student): You may add additional private members and helper functions
+
+  class BufferPoolManagerInstance {
+   public:
+    /**
+     * @brief Creates a new BufferPoolManager.
+     * @param pool_size the size of the buffer pool
+     * @param disk_manager the disk manager
+     * @param replacer_k the LookBack constant k for the LRU-K replacer
+     * @param log_manager the log manager (for testing only: nullptr = disable logging). Please ignore this for P1.
+     */
+    BufferPoolManagerInstance(size_t pool_size, size_t num_instance, size_t instance_index, DiskManager *disk_manager,
+                              size_t replacer_k = LRUK_REPLACER_K, LogManager *log_manager = nullptr);
+
+    /**
+     * @brief Destroy an existing BufferPoolManager.
+     */
+    ~BufferPoolManagerInstance();
+
+    /** @brief Return the size (number of frames) of the buffer pool. */
+    auto GetPoolSize() -> size_t { return pool_size_; }
+
+    /** @brief Return the pointer to all the pages in the buffer pool. */
+    auto GetPages() -> Page * { return pages_; }
+
+    /**
+     * TODO(P1): Add implementation
+     *
+     * @brief Create a new page in the buffer pool. Set page_id to the new page's id, or nullptr if all frames
+     * are currently in use and not evictable (in another word, pinned).
+     *
+     * You should pick the replacement frame from either the free list or the replacer (always find from the free list
+     * first), and then call the AllocatePage() method to get a new page id. If the replacement frame has a dirty page,
+     * you should write it back to the disk first. You also need to reset the memory and metadata for the new page.
+     *
+     * Remember to "Pin" the frame by calling replacer.SetEvictable(frame_id, false)
+     * so that the replacer wouldn't evict the frame before the buffer pool manager "Unpin"s it.
+     * Also, remember to record the access history of the frame in the replacer for the lru-k algorithm to work.
+     *
+     * @param[out] page_id id of created page
+     * @return nullptr if no new pages could be created, otherwise pointer to new page
+     */
+    auto NewPage(page_id_t *page_id) -> Page *;
+
+    /**
+     * TODO(P1): Add implementation
+     *
+     * @brief Fetch the requested page from the buffer pool. Return nullptr if page_id needs to be fetched from the disk
+     * but all frames are currently in use and not evictable (in another word, pinned).
+     *
+     * First search for page_id in the buffer pool. If not found, pick a replacement frame from either the free list or
+     * the replacer (always find from the free list first), read the page from disk by calling
+     * disk_manager_->ReadPage(), and replace the old page in the frame. Similar to NewPage(), if the old page is dirty,
+     * you need to write it back to disk and update the metadata of the new page
+     *
+     * In addition, remember to disable eviction and record the access history of the frame like you did for NewPage().
+     *
+     * @param page_id id of page to be fetched
+     * @param access_type type of access to the page, only needed for leaderboard tests.
+     * @return nullptr if page_id cannot be fetched, otherwise pointer to the requested page
+     */
+    auto FetchPage(page_id_t page_id, AccessType access_type = AccessType::Unknown) -> Page *;
+
+    /**
+     * TODO(P1): Add implementation
+     *
+     * @brief Unpin the target page from the buffer pool. If page_id is not in the buffer pool or its pin count is
+     * already 0, return false.
+     *
+     * Decrement the pin count of a page. If the pin count reaches 0, the frame should be evictable by the replacer.
+     * Also, set the dirty flag on the page to indicate if the page was modified.
+     *
+     * @param page_id id of page to be unpinned
+     * @param is_dirty true if the page should be marked as dirty, false otherwise
+     * @param access_type type of access to the page, only needed for leaderboard tests.
+     * @return false if the page is not in the page table or its pin count is <= 0 before this call, true otherwise
+     */
+    auto UnpinPage(page_id_t page_id, bool is_dirty, AccessType access_type = AccessType::Unknown) -> bool;
+
+    /**
+     * TODO(P1): Add implementation
+     *
+     * @brief Flush the target page to disk.
+     *
+     * Use the DiskManager::WritePage() method to flush a page to disk, REGARDLESS of the dirty flag.
+     * Unset the dirty flag of the page after flushing.
+     *
+     * @param page_id id of page to be flushed, cannot be INVALID_PAGE_ID
+     * @return false if the page could not be found in the page table, true otherwise
+     */
+    auto FlushPage(page_id_t page_id) -> bool;
+
+    /**
+     * TODO(P1): Add implementation
+     *
+     * @brief Flush all the pages in the buffer pool to disk.
+     */
+    void FlushAllPages();
+
+    /**
+     * TODO(P1): Add implementation
+     *
+     * @brief Delete a page from the buffer pool. If page_id is not in the buffer pool, do nothing and return true. If
+     * the page is pinned and cannot be deleted, return false immediately.
+     *
+     * After deleting the page from the page table, stop tracking the frame in the replacer and add the frame
+     * back to the free list. Also, reset the page's memory and metadata. Finally, you should call DeallocatePage() to
+     * imitate freeing the page on the disk.
+     *
+     * @param page_id id of page to be deleted
+     * @return false if the page exists but could not be deleted, true if the page didn't exist or deletion succeeded
+     */
+    auto DeletePage(page_id_t page_id) -> bool;
+
+   private:
+    /** Number of pages in the buffer pool. */
+    const size_t pool_size_;
+    const size_t num_instances_;
+    const size_t instance_index_;
+    /** The next page id to be allocated  */
+    std::atomic<page_id_t> next_page_id_;
+    /** Array of buffer pool pages. */
+    Page *pages_;
+    /** Pointer to the disk manager. */
+    DiskManager *disk_manager_;
+    /** Pointer to the log manager. Please ignore this for P1. */
+    LogManager *log_manager_ __attribute__((__unused__));
+    /** Page table for keeping track of buffer pool pages. */
+    std::unordered_map<page_id_t, frame_id_t> page_table_;
+    /** Replacer to find unpinned pages for replacement. */
+    std::unique_ptr<LRUKReplacer> replacer_;
+    /** List of free frames that don't have any pages on them. */
+    std::list<frame_id_t> free_list_;
+    /** This latch protects shared data structures. We recommend updating this comment to describe what it protects. */
+    std::mutex latch_;
+
+    /**
+     * @brief Allocate a page on disk. Caller should acquire the latch before calling this function.
+     * @return the id of the allocated page
+     */
+    auto AllocatePage() -> page_id_t;
+
+    /**
+     * @brief Deallocate a page on disk. Caller should acquire the latch before calling this function.
+     * @param page_id id of the page to deallocate
+     */
+    void DeallocatePage(__attribute__((unused)) page_id_t page_id) {
+      // This is a no-nop right now without a more complex data structure to track deallocated pages
+    }
+
+    // TODO(student): You may add additional private members and helper functions
+  };
 };
 }  // namespace bustub

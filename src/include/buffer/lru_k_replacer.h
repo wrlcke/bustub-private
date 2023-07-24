@@ -36,7 +36,7 @@ class LRUKNode {
   // [[maybe_unused]] bool is_evictable_{false};
   std::list<frame_id_t>::iterator list_it_;
   size_t access_count_;
-  AccessType access_type_;
+  // AccessType access_type_;
   bool is_evictable_;
 };
 
@@ -167,8 +167,6 @@ class LRUKReplacer {
   [[maybe_unused]] size_t replacer_size_;
   size_t k_;
   std::mutex latch_;
-
-  std::list<frame_id_t> warm_list_;
 };
 
 }  // namespace bustub

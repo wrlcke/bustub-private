@@ -15,7 +15,9 @@
 
 namespace bustub {
 
-LRUKReplacer::LRUKReplacer(size_t num_frames, size_t k) : replacer_size_(num_frames), k_(k) {}
+LRUKReplacer::LRUKReplacer(size_t num_frames, size_t k) : replacer_size_(num_frames), k_(k) {
+  node_store_.reserve(num_frames);
+}
 
 auto LRUKReplacer::Evict(frame_id_t *frame_id) -> bool {
   std::lock_guard<std::mutex> latch(latch_);
@@ -25,17 +27,8 @@ auto LRUKReplacer::Evict(frame_id_t *frame_id) -> bool {
   for (auto it = cold_list_.begin(); it != cold_list_.end(); ++it) {
     if (node_store_[*it].is_evictable_) {
       *frame_id = *it;
-      node_store_.erase(*frame_id);
+      node_store_.erase(*it);
       cold_list_.erase(it);
-      --curr_size_;
-      return true;
-    }
-  }
-  for (auto it = warm_list_.begin(); it != warm_list_.end(); ++it) {
-    if (node_store_[*it].is_evictable_) {
-      *frame_id = *it;
-      node_store_.erase(*frame_id);
-      warm_list_.erase(it);
       --curr_size_;
       return true;
     }
@@ -43,7 +36,7 @@ auto LRUKReplacer::Evict(frame_id_t *frame_id) -> bool {
   for (auto it = hot_list_.begin(); it != hot_list_.end(); ++it) {
     if (node_store_[*it].is_evictable_) {
       *frame_id = *it;
-      node_store_.erase(*frame_id);
+      node_store_.erase(*it);
       hot_list_.erase(it);
       --curr_size_;
       return true;
@@ -57,12 +50,8 @@ void LRUKReplacer::RecordAccess(frame_id_t frame_id, AccessType access_type) {
   auto node_it = node_store_.find(frame_id);
   if (node_it == node_store_.end()) {
     std::list<frame_id_t>::iterator list_it;
-    if (access_type == AccessType::Get) {
-      list_it = warm_list_.insert(warm_list_.end(), frame_id);
-    } else {
-      list_it = cold_list_.insert(cold_list_.end(), frame_id);
-    }
-    node_store_.emplace(frame_id, LRUKNode{list_it, 1, access_type, false});
+    list_it = cold_list_.insert(cold_list_.end(), frame_id);
+    node_store_.emplace(frame_id, LRUKNode{list_it, 1, false});
     return;
   }
   LRUKNode &node = node_it->second;
@@ -74,20 +63,10 @@ void LRUKReplacer::RecordAccess(frame_id_t frame_id, AccessType access_type) {
   }
   ++node.access_count_;
   if (node.access_count_ >= k_) {
-    if (access_type == AccessType::Get) {
-      warm_list_.erase(node.list_it_);
-    } else {
-      cold_list_.erase(node.list_it_);
-    }
+    cold_list_.erase(node.list_it_);
     hot_list_.emplace_back(frame_id);
     node.list_it_ = --hot_list_.end();
     return;
-  }
-  if (access_type != node.access_type_ && access_type == AccessType::Get) {
-    cold_list_.erase(node.list_it_);
-    warm_list_.emplace_back(frame_id);
-    node.list_it_ = --warm_list_.end();
-    node.access_type_ = AccessType::Get;
   }
 }
 
@@ -114,11 +93,7 @@ void LRUKReplacer::Remove(frame_id_t frame_id) {
   if (node.access_count_ >= k_) {
     hot_list_.erase(node.list_it_);
   } else {
-    if (node.access_type_ == AccessType::Get) {
-      warm_list_.erase(node.list_it_);
-    } else {
-      cold_list_.erase(node.list_it_);
-    }
+    cold_list_.erase(node.list_it_);
   }
   node_store_.erase(node_it);
 }

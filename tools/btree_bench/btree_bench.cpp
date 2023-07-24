@@ -171,8 +171,10 @@ auto main(int argc, char **argv) -> int {
   };
   std::atomic<int> tt = 0;
   std::mutex mtx;
+  std::mutex global;
   std::vector<std::string> logs;
   index.Draw(bpm.get(), make_outf());
+  // index.PrintNumMetric();
 #define MYDEBUG1
 
   fmt::print(stderr, "[info] benchmark start\n");
@@ -183,10 +185,10 @@ auto main(int argc, char **argv) -> int {
   std::vector<std::thread> threads;
 
   for (size_t thread_id = 0; thread_id < BUSTUB_READ_THREAD; thread_id++) {
-    threads.emplace_back(std::thread([thread_id, &index, duration_ms, &total_metrics, &tt, &logs, &mtx] {
+    threads.emplace_back(std::thread([thread_id, &index, duration_ms, &total_metrics, &tt, &logs, &mtx, &global] {
       BTreeMetrics metrics(fmt::format("read  {:>2}", thread_id), duration_ms);
       metrics.Begin();
-
+      (void)global;
       size_t key_start = TOTAL_KEYS / BUSTUB_READ_THREAD * thread_id;
       size_t key_end = TOTAL_KEYS / BUSTUB_READ_THREAD * (thread_id + 1);
       std::random_device r;
@@ -197,6 +199,7 @@ auto main(int argc, char **argv) -> int {
       std::vector<bustub::RID> rids;
 
       while (!metrics.ShouldFinish()) {
+        // std::unique_lock<std::mutex> global_latch(global);
         auto base_key = dis(gen);
         size_t cnt = 0;
         for (auto key = base_key; key < key_end && cnt < KEY_MODIFY_RANGE; key++, cnt++) {
@@ -244,12 +247,12 @@ auto main(int argc, char **argv) -> int {
   }
 
   for (size_t thread_id = 0; thread_id < BUSTUB_WRITE_THREAD; thread_id++) {
-    threads.emplace_back(
-        std::thread([thread_id, &index, duration_ms, &total_metrics, &bpm, &tt, &mtx, &logs, &make_log, &make_outf] {
+    threads.emplace_back(std::thread(
+        [thread_id, &index, duration_ms, &total_metrics, &bpm, &tt, &mtx, &logs, &make_log, &make_outf, &global] {
           (void)bpm, (void)tt, (void)mtx, (void)logs, (void)make_log, (void)make_outf;
           BTreeMetrics metrics(fmt::format("write {:>2}", thread_id), duration_ms);
           metrics.Begin();
-
+          (void)global;
           size_t key_start = TOTAL_KEYS / BUSTUB_WRITE_THREAD * thread_id;
           size_t key_end = TOTAL_KEYS / BUSTUB_WRITE_THREAD * (thread_id + 1);
           std::random_device r;
@@ -262,6 +265,7 @@ auto main(int argc, char **argv) -> int {
           bool do_insert = false;
 
           while (!metrics.ShouldFinish()) {
+            // std::unique_lock<std::mutex> global_latch(global);
             auto base_key = dis(gen);
             size_t cnt = 0;
             for (auto key = base_key; key < key_end && cnt < KEY_MODIFY_RANGE; key++, cnt++) {
@@ -326,7 +330,7 @@ auto main(int argc, char **argv) -> int {
   for (auto &thread : threads) {
     thread.join();
   }
-
+  // index.PrintNumMetric();
   total_metrics.Report();
 
   return 0;

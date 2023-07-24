@@ -51,6 +51,11 @@ auto BPLUSTREE_TYPE::IsEmpty() const -> bool {
  */
 INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::GetValue(const KeyType &key, std::vector<ValueType> *result, Transaction *txn) -> bool {
+  if (restart_metric_) {
+    PrintNumMetric();
+    restart_metric_ = false;
+  }
+  ++read_num_;
   ReadPageGuard guard = bpm_->FetchPageRead(header_page_id_);
   const auto *header_page = guard.As<BPlusTreeHeaderPage>();
   page_id_t next_page_id = header_page->root_page_id_;
@@ -95,9 +100,11 @@ auto BPLUSTREE_TYPE::Insert(const KeyType &key, const ValueType &value, Transact
   guard.Drop();
   const auto *const_leaf_page = leaf_guard.As<LeafPage>();
   if (const_leaf_page->HasValue(key, comparator_)) {
+    ++insert_duplicate_num_;
     return false;
   }
   if (const_leaf_page->GetSize() + 1 < const_leaf_page->GetMaxSize()) {
+    ++insert_num_;
     auto *leaf_page = leaf_guard.AsMut<LeafPage>();
     leaf_page->Insert(key, value, comparator_);
     return true;
@@ -231,6 +238,7 @@ auto BPLUSTREE_TYPE::SplitInternal(InternalPage *internal_page, SplitContext *ct
 
 INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::SplitLeaf(LeafPage *leaf_page, SplitContext *ctx) -> void {
+  ++insert_redistribute_num_;
   if (!ctx->IsFrontPageRoot()) {
     auto *parent_page = ctx->GetFrontPageParent().template AsMut<InternalPage>();
     int index = parent_page->UpperBound(leaf_page->KeyAt(0), comparator_) - 1;
@@ -259,6 +267,8 @@ auto BPLUSTREE_TYPE::SplitLeaf(LeafPage *leaf_page, SplitContext *ctx) -> void {
       return;
     }
   }
+  --insert_redistribute_num_;
+  ++split_num_;
   page_id_t new_page_id;
   BasicPageGuard new_leaf_guard = bpm_->NewPageGuarded(&new_page_id);
   auto *new_leaf_page = new_leaf_guard.AsMut<LeafPage>();
@@ -296,10 +306,12 @@ void BPLUSTREE_TYPE::Remove(const KeyType &key, Transaction *txn) {
   guard.Drop();
   const auto *const_leaf_page = leaf_guard.As<LeafPage>();
   if (!const_leaf_page->HasValue(key, comparator_)) {
+    ++remove_notfound_num_;
     return;
   }
   if (const_leaf_page->OverHalfFull() || leaf_guard.PageId() == root_page_id) {
     auto *leaf_page = leaf_guard.AsMut<LeafPage>();
+    ++remove_num_;
     leaf_page->Remove(key, comparator_);
     return;
   }
@@ -409,6 +421,7 @@ auto BPLUSTREE_TYPE::MergeInternal(InternalPage *internal_page, MergeContext *ct
 
 INDEX_TEMPLATE_ARGUMENTS
 auto BPLUSTREE_TYPE::MergeLeaf(LeafPage *leaf_page, MergeContext *ctx) -> void {
+  ++remove_redistribute_num_;
   auto *parent_page = ctx->GetFrontPageParent().template AsMut<InternalPage>();
   int index = parent_page->UpperBound(leaf_page->KeyAt(0), comparator_) - 1;
   WritePageGuard left_sib_guard;
@@ -435,6 +448,8 @@ auto BPLUSTREE_TYPE::MergeLeaf(LeafPage *leaf_page, MergeContext *ctx) -> void {
     ctx->Finish();
     return;
   }
+  --remove_redistribute_num_;
+  ++merge_num_;
   LeafPage *left_page;
   LeafPage *right_page;
   if (const_right_sib_page != nullptr) {

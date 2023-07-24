@@ -99,6 +99,8 @@ class BPlusTree {
                      const KeyComparator &comparator, int leaf_max_size = LEAF_PAGE_SIZE,
                      int internal_max_size = INTERNAL_PAGE_SIZE);
 
+  ~BPlusTree() { PrintNumMetric(); }
+
   // Returns true if this B+ tree has no keys and values.
   auto IsEmpty() const -> bool;
 
@@ -239,7 +241,38 @@ class BPlusTree {
     page_id_t root_page_id_;
     int32_t tree_depth_;
   };
-  inline auto IsLeafDepth(int depth, int tree_depth) -> bool { return depth == tree_depth; }
+
+ public:
+  std::atomic_bool restart_metric_{true};
+  std::atomic_int read_num_{0};
+  std::atomic_int insert_num_{0};
+  std::atomic_int insert_duplicate_num_{0};
+  std::atomic_int insert_redistribute_num_{0};
+  std::atomic_int split_num_{0};
+  std::atomic_int remove_num_{0};
+  std::atomic_int remove_notfound_num_{0};
+  std::atomic_int remove_redistribute_num_{0};
+  std::atomic_int merge_num_{0};
+  void PrintNumMetric() {
+    // std::cout << "read_num: " << read_num_ << std::endl;
+    // std::cout << "insert_num: " << insert_num_ << std::endl;
+    // std::cout << "insert_duplicate_num: " << insert_duplicate_num_ << std::endl;
+    // std::cout << "insert_redistribute_num: " << insert_redistribute_num_ << std::endl;
+    // std::cout << "split_num: " << split_num_ << std::endl;
+    // std::cout << "remove_num: " << remove_num_ << std::endl;
+    // std::cout << "remove_notfound_num: " << remove_notfound_num_ << std::endl;
+    // std::cout << "remove_redistribute_num: " << remove_redistribute_num_ << std::endl;
+    // std::cout << "merge_num: " << merge_num_ << std::endl;
+    read_num_ = 0;
+    insert_num_ = 0;
+    insert_duplicate_num_ = 0;
+    insert_redistribute_num_ = 0;
+    split_num_ = 0;
+    remove_num_ = 0;
+    remove_notfound_num_ = 0;
+    remove_redistribute_num_ = 0;
+    merge_num_ = 0;
+  }
 };
 
 /**
